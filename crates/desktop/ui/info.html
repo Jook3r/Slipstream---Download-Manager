@@ -13,6 +13,9 @@
       <label for="url">URL</label>
       <input id="url" class="field mono" type="text" spellcheck="false">
 
+      <label for="quality" class="stream-only">Quality</label>
+      <select id="quality" class="field stream-only"></select>
+
       <label for="category">Category</label>
       <select id="category" class="field"></select>
 
@@ -43,6 +46,15 @@
       <pre class="notice-details" id="notice-details" hidden></pre>
     </div>
     <p class="hint warn exists" id="exists" hidden>A file with this name already exists and will be replaced.</p>
+
+    <div class="notice ffmpeg" id="ffmpeg" hidden>
+      <p class="notice-text" id="ffmpeg-text"></p>
+      <div class="notice-actions">
+        <button type="button" class="btn small" id="get-ffmpeg">Get ffmpeg</button>
+        <button type="button" class="linkish" id="choose-ffmpeg">I have ffmpeg…</button>
+        <span class="hint" id="ffmpeg-progress"></span>
+      </div>
+    </div>
 
     <div class="buttons">
       <button type="submit" class="btn" value="later">Download Later</button>

@@ -18,6 +18,7 @@ mod limiter;
 pub mod probe;
 pub mod segments;
 mod state;
+pub mod stream;
 
 use std::time::Duration;
 
@@ -29,6 +30,10 @@ pub use download::{
 pub use limiter::RateLimiter;
 pub use probe::{RemoteInfo, probe};
 pub use reqwest::{Client, Url};
+pub use stream::{
+    StreamDownload, StreamInfo, StreamKind, StreamProgress, StreamRequest, Variant, VariantKey,
+    find_ffmpeg, inspect_stream, stream_kind, stream_work_dir,
+};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -54,6 +59,18 @@ pub enum Error {
         "the server sent a web page instead of the file; the link has probably expired, so get a fresh one from the website"
     )]
     WebPage,
+    #[error("this video is protected (DRM), so it cannot be downloaded")]
+    Protected,
+    #[error("this is a live stream, which cannot be downloaded yet")]
+    Live,
+    #[error("{0}")]
+    Playlist(String),
+    #[error(
+        "ffmpeg is needed to join this video's picture and sound; set it up in Options, then resume"
+    )]
+    FfmpegMissing,
+    #[error("ffmpeg could not finish the video: {0}")]
+    Ffmpeg(String),
     #[error("gave up after repeated errors; run the download again to resume")]
     Incomplete,
     #[error("cancelled")]
@@ -88,7 +105,12 @@ impl Error {
             | Error::RemoteChanged
             | Error::Incomplete
             | Error::Cancelled
-            | Error::WebPage => true,
+            | Error::WebPage
+            | Error::Protected
+            | Error::Live
+            | Error::Playlist(_)
+            | Error::FfmpegMissing
+            | Error::Ffmpeg(_) => true,
             Error::BadResponse(_) => false,
         }
     }

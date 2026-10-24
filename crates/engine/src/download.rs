@@ -18,6 +18,7 @@ use crate::limiter::RateLimiter;
 use crate::probe::{RemoteInfo, parse_content_range, probe};
 use crate::segments::{Assignment, Receive, SegmentMap, SegmentView, WorkerId};
 use crate::state::{State, part_path, state_path};
+use crate::stream::StreamProgress;
 use crate::{Error, Result, apply_headers};
 
 /// Bytes each connection collects before writing them to disk.
@@ -96,25 +97,46 @@ struct Shared {
     map: Mutex<SegmentMap>,
 }
 
+/// What a running download's numbers can be read from.
+pub(crate) trait Watch: Send + Sync {
+    fn snapshot(&self) -> ProgressSnapshot;
+}
+
 /// A cheap handle for watching a download from another task.
-#[derive(Debug, Clone)]
-pub struct Progress(Arc<Shared>);
+#[derive(Clone)]
+pub struct Progress(pub(crate) Arc<dyn Watch>);
+
+impl std::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Progress")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ProgressSnapshot {
     pub downloaded: u64,
+    /// For a stream, an estimate until every piece has arrived.
     pub total: Option<u64>,
     pub connections: usize,
     pub segments: Vec<SegmentView>,
+    /// Set for video streams, which arrive as many small pieces.
+    pub stream: Option<StreamProgress>,
 }
 
 impl Progress {
     pub fn snapshot(&self) -> ProgressSnapshot {
+        self.0.snapshot()
+    }
+}
+
+impl Watch for Shared {
+    fn snapshot(&self) -> ProgressSnapshot {
         ProgressSnapshot {
-            downloaded: self.0.downloaded.load(Ordering::Relaxed),
-            total: self.0.total,
-            connections: self.0.connections.load(Ordering::Relaxed),
-            segments: self.0.map.lock().unwrap().view(),
+            downloaded: self.downloaded.load(Ordering::Relaxed),
+            total: self.total,
+            connections: self.connections.load(Ordering::Relaxed),
+            segments: self.map.lock().unwrap().view(),
+            stream: None,
         }
     }
 }
@@ -468,13 +490,13 @@ async fn worker(ctx: Arc<Ctx>, id: WorkerId) {
     }
 }
 
-async fn throttle(limiters: &[Arc<RateLimiter>], bytes: usize) {
+pub(crate) async fn throttle(limiters: &[Arc<RateLimiter>], bytes: usize) {
     for limiter in limiters {
         limiter.acquire(bytes).await;
     }
 }
 
-fn backoff(failures: u32) -> Duration {
+pub(crate) fn backoff(failures: u32) -> Duration {
     Duration::from_millis(500 << failures.min(6))
 }
 
@@ -630,7 +652,7 @@ fn reserve(part: &Path) -> bool {
         .is_ok()
 }
 
-fn numbered(base: &Path, n: u32) -> PathBuf {
+pub(crate) fn numbered(base: &Path, n: u32) -> PathBuf {
     if n == 0 {
         return base.to_path_buf();
     }

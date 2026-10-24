@@ -15,13 +15,31 @@ use tauri::{AppHandle, Manager as _};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::windows::{self, BatchLink, PendingLink};
+use crate::windows::{self, BatchLink, MediaHint, PendingLink};
 
 /// A link the extension caught.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Download {
     url: String,
+    referrer: Option<String>,
+    file_name: Option<String>,
+    file_size: Option<u64>,
+    cookies: Option<String>,
+    user_agent: Option<String>,
+}
+
+/// A video the extension saw a page play: a stream manifest or a media
+/// file.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Media {
+    url: String,
+    /// "hls", "dash" or "file".
+    kind: String,
+    /// The page's title, to name the file after.
+    title: Option<String>,
+    /// The page playing it.
     referrer: Option<String>,
     file_name: Option<String>,
     file_size: Option<u64>,
@@ -103,6 +121,9 @@ fn handle(app: &AppHandle, request: Value) -> Value {
         Some("downloadAll") => serde_json::from_value(request)
             .map_err(|e| e.to_string())
             .and_then(|d| download_all(app, d)),
+        Some("media") => serde_json::from_value(request)
+            .map_err(|e| e.to_string())
+            .and_then(|m| media(app, m)),
         _ => Err("unknown request".to_string()),
     };
     match result {
@@ -131,6 +152,7 @@ fn download(app: &AppHandle, d: Download) -> Result<(), String> {
             file_name: d.file_name,
             file_size: d.file_size,
             from_browser: true,
+            media: None,
         };
         return windows::open_file_info(app, link).map_err(|e| e.to_string());
     }
@@ -144,6 +166,43 @@ fn download(app: &AppHandle, d: Download) -> Result<(), String> {
         windows::open_progress(app, item.id).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// A video always gets the Download File Info window, where its quality and
+/// name are chosen.
+fn media(app: &AppHandle, m: Media) -> Result<(), String> {
+    let mut headers = browser_headers(
+        m.cookies.as_deref(),
+        m.referrer.as_deref(),
+        m.user_agent.as_deref(),
+    );
+    // Video servers often check where a request comes from, as browsers
+    // send it for a player's requests to another site.
+    if let Some(origin) = m.referrer.as_deref().and_then(origin_of)
+        && origin_of(&m.url).as_deref() != Some(origin.as_str())
+    {
+        headers.push(("Origin".into(), origin));
+    }
+    let link = PendingLink {
+        url: m.url,
+        headers,
+        referrer: m.referrer,
+        file_name: m.file_name,
+        file_size: m.file_size,
+        from_browser: true,
+        media: Some(MediaHint {
+            kind: m.kind,
+            title: m.title,
+        }),
+    };
+    windows::open_file_info(app, link).map_err(|e| e.to_string())
+}
+
+/// `https://host:port` of a link.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    (!host.is_empty() && matches!(scheme, "http" | "https")).then(|| format!("{scheme}://{host}"))
 }
 
 fn download_all(app: &AppHandle, d: DownloadAll) -> Result<(), String> {
@@ -207,6 +266,19 @@ mod tests {
             ]
         );
         assert!(browser_headers(Some("x\r\nInjected: 1"), None, None).is_empty());
+    }
+
+    #[test]
+    fn finds_origins() {
+        assert_eq!(
+            origin_of("https://www.site.example/watch?v=1").as_deref(),
+            Some("https://www.site.example")
+        );
+        assert_eq!(
+            origin_of("http://cdn.example:8080/a.m3u8").as_deref(),
+            Some("http://cdn.example:8080")
+        );
+        assert_eq!(origin_of("file:///etc/passwd"), None);
     }
 
     #[test]

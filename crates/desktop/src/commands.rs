@@ -4,7 +4,10 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use slipstream_manager::{AddReport, Category, Id, Item, LinkInfo, Manager, NewDownload, Settings};
+use slipstream_manager::{
+    AddReport, Category, FfmpegStatus, Id, Item, LinkInfo, Manager, NewDownload, Settings,
+    StreamChoice, StreamLinkInfo,
+};
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
@@ -116,6 +119,7 @@ pub async fn add_links(app: AppHandle, urls: Vec<String>) -> CmdResult {
                 file_name: None,
                 file_size: None,
                 from_browser: false,
+                media: None,
             },
         )
         .map_err(text),
@@ -156,6 +160,24 @@ pub async fn inspect_link(
     manager.inspect(&url, &headers).await
 }
 
+/// Lists a video stream's qualities, with the browser's cookies.
+#[tauri::command]
+pub async fn inspect_stream(
+    manager: State<'_, Manager>,
+    pending: State<'_, Pending>,
+    token: String,
+    url: String,
+) -> CmdResult<StreamLinkInfo> {
+    let headers = pending.link(&token).map(|l| l.headers).unwrap_or_default();
+    manager.inspect_stream(&url, &headers).await
+}
+
+/// A free place to save `file_name`, in its category's folder.
+#[tauri::command]
+pub fn suggest_path(manager: State<Manager>, file_name: String) -> PathBuf {
+    manager.suggest_path(&file_name)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinkChoice {
@@ -165,6 +187,8 @@ pub struct LinkChoice {
     description: String,
     start: bool,
     remember_folder: bool,
+    /// For a video stream, the quality chosen.
+    stream: Option<StreamChoice>,
 }
 
 /// "Start Download" or "Download Later" in a Download File Info window.
@@ -199,6 +223,7 @@ pub async fn confirm_link(
         category: Some(choice.category),
         description: choice.description,
         start: choice.start,
+        stream: choice.stream,
     })?;
     pending.take_link(&token);
     if choice.start && manager.settings().show_progress {
@@ -341,6 +366,40 @@ fn open_path(app: &AppHandle, path: &Path) -> CmdResult {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(text)
+}
+
+// ---------- ffmpeg ----------
+
+#[tauri::command]
+pub fn ffmpeg_status(manager: State<Manager>) -> FfmpegStatus {
+    manager.ffmpeg_status()
+}
+
+/// Fetches ffmpeg in the background; progress arrives as `ffmpeg` events.
+#[tauri::command]
+pub fn install_ffmpeg(manager: State<Manager>) -> CmdResult {
+    manager.install_ffmpeg()
+}
+
+/// Lets the user point at an ffmpeg they already have.
+#[tauri::command]
+pub async fn choose_ffmpeg(app: AppHandle, manager: State<'_, Manager>) -> CmdResult<FfmpegStatus> {
+    let Some(picked) = app
+        .dialog()
+        .file()
+        .set_title("Choose ffmpeg")
+        .blocking_pick_file()
+    else {
+        return Ok(manager.ffmpeg_status());
+    };
+    let path = picked.into_path().map_err(text)?;
+    if !slipstream_manager::ffmpeg::runs(&path).await {
+        return Err(format!("{} is not a working ffmpeg", path.display()));
+    }
+    let mut settings = manager.settings();
+    settings.ffmpeg_path = Some(path);
+    manager.set_settings(settings);
+    Ok(manager.ffmpeg_status())
 }
 
 // ---------- the app ----------

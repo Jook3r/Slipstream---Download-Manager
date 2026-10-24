@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -14,6 +14,10 @@ pub struct Store {
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// Reads `name`, or returns the default if it is missing. A corrupt file

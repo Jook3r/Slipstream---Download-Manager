@@ -73,6 +73,7 @@ function statusText() {
   switch (item.status) {
     case 'downloading':
       if (!live) return 'Connecting…';
+      if (live.stream?.joining) return 'Joining picture and sound with ffmpeg…';
       return live.connections > 0 ? 'Receiving data…' : 'Connecting…';
     case 'queued':
       return 'Waiting in the queue…';
@@ -95,7 +96,15 @@ function renderProgress() {
   setText(status, statusText());
   status.title = item.status === 'failed' ? item.error ?? '' : '';
   status.classList.toggle('error', item.status === 'failed');
-  setText($('size'), item.total != null ? fmtBytes(item.total) : 'Unknown');
+  // A stream's size is an estimate until every piece has arrived.
+  const estimate = item.stream && item.status !== 'completed' ? 'About ' : '';
+  setText($('size'), item.total != null ? `${estimate}${fmtBytes(item.total)}` : 'Unknown');
+  for (const el of document.querySelectorAll('.stream-row')) el.hidden = !item.stream;
+  if (item.stream) {
+    const pieces = live?.stream;
+    const quality = item.stream.quality || 'Best quality';
+    setText($('video'), pieces ? `${quality} · ${pieces.done} of ${pieces.pieces} pieces` : quality);
+  }
   setText($('downloaded'), pct != null ? `${fmtBytes(item.downloaded)} (${fmtPercent(pct)})` : fmtBytes(item.downloaded));
   const speed = item.status === 'downloading' ? live?.speed ?? 0 : 0;
   setText($('rate'), fmtSpeed(speed, '/sec'));
@@ -116,7 +125,12 @@ function renderProgress() {
 }
 
 function renderDetails() {
+  setText(
+    $('map-caption'),
+    item.stream ? 'Pieces of the video downloaded, and the piece each connection is on' : 'Start positions and download progress by connections',
+  );
   drawSegments();
+  if (item.stream) return renderPieces();
   const tbody = $('conns');
   const segments = item.status === 'downloading' ? live?.segments ?? [] : [];
   if (!segments.length) {
@@ -149,6 +163,41 @@ function renderDetails() {
   });
 }
 
+/** A stream's connections: the piece each one is fetching. */
+function renderPieces() {
+  const tbody = $('conns');
+  const s = item.status === 'downloading' ? live?.stream : null;
+  const workers = s?.workers ?? [];
+  if (!workers.length) {
+    let message = 'Connections appear here while the video downloads.';
+    if (s?.joining) message = 'All pieces are in; joining them into one file…';
+    else if (item.status === 'downloading') message = 'Connecting…';
+    if (tbody.dataset.empty !== message) {
+      tbody.dataset.empty = message;
+      tbody.innerHTML = '<tr><td class="none" colspan="3"></td></tr>';
+      tbody.querySelector('td').textContent = message;
+    }
+    return;
+  }
+  if (tbody.dataset.empty) {
+    delete tbody.dataset.empty;
+    tbody.replaceChildren();
+  }
+  while (tbody.children.length > workers.length) tbody.lastChild.remove();
+  while (tbody.children.length < workers.length) {
+    const tr = document.createElement('tr');
+    tr.className = 'active';
+    tr.innerHTML = '<td class="n"></td><td class="got"></td><td class="info"></td>';
+    tbody.append(tr);
+  }
+  workers.forEach((w, k) => {
+    const tr = tbody.children[k];
+    setText(tr.querySelector('.n'), String(k + 1));
+    setText(tr.querySelector('.got'), fmtBytes(w.received));
+    setText(tr.querySelector('.info'), `Piece ${w.piece + 1} of ${s.pieces}`);
+  });
+}
+
 /** IDM's bar: received data per piece, a marker where each piece starts. */
 function drawSegments() {
   const canvas = $('segmap');
@@ -162,10 +211,17 @@ function drawSegments() {
   const color = (name) => css.getPropertyValue(name).trim();
   ctx.fillStyle = color('--track');
   ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = color('--accent');
+  const pieces = item.status === 'downloading' ? live?.stream : null;
+  if (pieces?.pieces) {
+    // A stream: which of its pieces have arrived.
+    const px = (n) => (n / pieces.pieces) * w;
+    for (const [a, b] of pieces.runs) ctx.fillRect(px(a), 0, Math.max(1, px(b) - px(a)), h);
+    return;
+  }
   const total = live?.total ?? item.total;
   if (!total) return;
   const x = (bytes) => (bytes / total) * w;
-  ctx.fillStyle = color('--accent');
   const segments = item.status === 'downloading' ? live?.segments : null;
   if (segments?.length) {
     for (const s of segments) ctx.fillRect(x(s.start), 0, Math.max(0, x(s.written) - x(s.start)), h);

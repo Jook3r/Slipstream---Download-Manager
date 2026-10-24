@@ -1,7 +1,9 @@
 //! A local HTTP server that can misbehave on purpose, shared by the tests of
-//! the engine and the manager. Every path serves the same data, so the URL's
-//! last segment decides the file name.
+//! the engine and the manager. Paths added with [`Server::add_file`] serve
+//! their own data; every other path serves the same data, so the URL's last
+//! segment decides the file name.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -9,16 +11,23 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::stream;
 
 pub const MB: usize = 1 << 20;
 
+/// A file served at a path of its own: its data and Content-Type.
+type File = (Arc<Vec<u8>>, Option<String>);
+
 #[derive(Default)]
 pub struct Server {
     base: String,
     data: RwLock<(Arc<Vec<u8>>, String)>,
+    /// Path (without the leading slash) → data and Content-Type.
+    files: RwLock<HashMap<String, File>>,
+    /// Requests per path, for checking what was fetched.
+    pub hits: RwLock<HashMap<String, usize>>,
     pub no_ranges: AtomicBool,
     pub no_length: AtomicBool,
     /// Per-connection speed cap in bytes/s, to make parallelism matter.
@@ -40,6 +49,18 @@ pub struct Server {
 impl Server {
     pub fn set_data(&self, data: Vec<u8>, etag: &str) {
         *self.data.write().unwrap() = (Arc::new(data), format!("\"{etag}\""));
+    }
+
+    /// Serves `data` at `path` (e.g. `"hls/index.m3u8"`).
+    pub fn add_file(&self, path: &str, data: Vec<u8>, content_type: Option<&str>) {
+        self.files.write().unwrap().insert(
+            path.trim_start_matches('/').to_string(),
+            (Arc::new(data), content_type.map(str::to_string)),
+        );
+    }
+
+    pub fn hits(&self, path: &str) -> usize {
+        self.hits.read().unwrap().get(path).copied().unwrap_or(0)
     }
 
     /// A URL on this server, e.g. `url("files/movie.mp4")`.
@@ -103,8 +124,17 @@ impl Drop for InFlight {
     }
 }
 
-async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
-    let (data, etag) = s.data.read().unwrap().clone();
+async fn serve(State(s): State<Arc<Server>>, uri: Uri, headers: HeaderMap) -> Response {
+    let path = uri.path().trim_start_matches('/').to_string();
+    *s.hits.write().unwrap().entry(path.clone()).or_default() += 1;
+    let file = s.files.read().unwrap().get(&path).cloned();
+    let (data, etag, file_type) = match file {
+        Some((data, content_type)) => (data, format!("\"{path}\""), content_type),
+        None => {
+            let (data, etag) = s.data.read().unwrap().clone();
+            (data, etag, None)
+        }
+    };
     s.requests.fetch_add(1, Ordering::SeqCst);
     let is_probe = headers.get(header::RANGE).is_some_and(|v| v == "bytes=0-0");
     if is_probe && take_one(&s.probe_failures) {
@@ -128,7 +158,7 @@ async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
         .map(|(a, b)| (a.parse::<usize>().unwrap(), b.parse::<usize>().ok()));
 
     let mut resp = Response::builder().header(header::ETAG, &etag);
-    if let Some(content_type) = s.content_type.read().unwrap().as_deref() {
+    if let Some(content_type) = file_type.or_else(|| s.content_type.read().unwrap().clone()) {
         resp = resp.header(header::CONTENT_TYPE, content_type);
     }
     let (from, to) = match range {

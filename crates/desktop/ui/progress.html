@@ -25,6 +25,7 @@
             <dt>Transfer rate</dt><dd id="rate"></dd>
             <dt>Time left</dt><dd id="eta"></dd>
             <dt>Resume capability</dt><dd id="resume"></dd>
+            <dt class="stream-row" hidden>Video</dt><dd class="stream-row" id="video" hidden></dd>
           </dl>
         </div>
         <div id="tab-limiter" class="limiter" hidden>
@@ -53,7 +54,7 @@
     </div>
 
     <div id="details" class="details">
-      <p class="caption">Start positions and download progress by connections</p>
+      <p class="caption" id="map-caption">Start positions and download progress by connections</p>
       <canvas class="segmap" id="segmap" aria-label="Which parts of the file have arrived"></canvas>
       <div class="conn-table">
         <table>

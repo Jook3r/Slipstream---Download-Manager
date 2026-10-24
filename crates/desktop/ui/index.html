@@ -114,6 +114,7 @@
         <button type="button" class="active" data-tab="opt-general">General</button>
         <button type="button" data-tab="opt-save">Save To</button>
         <button type="button" data-tab="opt-connection">Connection</button>
+        <button type="button" data-tab="opt-video">Video</button>
       </div>
       <div class="tab-body opt-body">
         <section id="opt-general" class="opt-page">
@@ -149,6 +150,17 @@
               <option value="1048576">MB/s</option>
             </select>
           </div>
+        </section>
+        <section id="opt-video" class="opt-page" hidden>
+          <p>Videos on web pages often come as streams of small pieces, with picture and sound apart. Slipstream joins them into one MP4 with <b>ffmpeg</b>, a free tool.</p>
+          <p class="opt-legend">ffmpeg</p>
+          <p class="ffmpeg-path" id="set-ffmpeg"></p>
+          <div class="row">
+            <button type="button" class="btn" id="set-ffmpeg-get">Get ffmpeg</button>
+            <button type="button" class="btn" id="set-ffmpeg-choose">Choose…</button>
+            <span class="hint" id="set-ffmpeg-progress"></span>
+          </div>
+          <p class="hint">“Get ffmpeg” downloads a ready-made build (gyan.dev on Windows, martin-riedl.de on macOS) into Slipstream’s own folder.</p>
         </section>
       </div>
       <div class="actions">

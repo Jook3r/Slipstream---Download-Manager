@@ -6,13 +6,16 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 use clap::Parser;
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
+use slipstream_engine::probe::file_name_from_url;
 use slipstream_engine::{
-    ClientOptions, Download, Options, Outcome, Output, ProgressSnapshot, RateLimiter, Request,
-    build_client,
+    Client, ClientOptions, Download, Options, Outcome, Output, ProgressSnapshot, RateLimiter,
+    Request, StreamDownload, StreamRequest, Variant, build_client, find_ffmpeg, inspect_stream,
+    stream_kind,
 };
 use tokio_util::sync::CancellationToken;
 
 /// Download files over many connections at once, with pause and resume.
+/// Video streams (HLS .m3u8 and DASH .mpd links) are saved as one video.
 ///
 /// Press Ctrl+C to pause; run the same command again to resume.
 #[derive(Parser)]
@@ -20,6 +23,18 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     /// The link to download.
     url: String,
+    /// Treat the link as a video stream even if it does not end in .m3u8 or .mpd.
+    #[arg(long)]
+    stream: bool,
+    /// For streams: best, worst, or a height such as 720 (the best at or below it).
+    #[arg(short, long, default_value = "best")]
+    quality: String,
+    /// For streams: list the qualities on offer and stop.
+    #[arg(long)]
+    list_qualities: bool,
+    /// ffmpeg, to join a stream's picture and sound [default: found automatically].
+    #[arg(long)]
+    ffmpeg: Option<PathBuf>,
     /// Save to this exact file.
     #[arg(short, long, conflicts_with = "dir")]
     output: Option<PathBuf>,
@@ -69,24 +84,18 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
         .iter()
         .map(|h| parse_header(h))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    if let Some(referer) = args.referer {
+    if let Some(referer) = args.referer.clone() {
         headers.push(("Referer".into(), referer));
     }
     let mut client_opts = ClientOptions {
-        proxy: args.proxy,
+        proxy: args.proxy.clone(),
         read_timeout: Duration::from_secs(args.timeout),
         ..Default::default()
     };
-    if let Some(ua) = args.user_agent {
+    if let Some(ua) = args.user_agent.clone() {
         client_opts.user_agent = ua;
     }
     let client = build_client(&client_opts).context("invalid network settings")?;
-
-    let output = match (args.output, args.dir) {
-        (Some(file), _) => Output::File(file),
-        (None, Some(dir)) => Output::Dir(dir),
-        (None, None) => Output::Dir(PathBuf::from(".")),
-    };
     let options = Options {
         connections: args.connections.into(),
         max_retries: args.retries,
@@ -96,6 +105,15 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
             .into_iter()
             .collect(),
         ..Default::default()
+    };
+    if args.stream || args.list_qualities || stream_kind(&args.url, None).is_some() {
+        return run_stream(args, client, headers, options).await;
+    }
+
+    let output = match (args.output, args.dir) {
+        (Some(file), _) => Output::File(file),
+        (None, Some(dir)) => Output::Dir(dir),
+        (None, None) => Output::Dir(PathBuf::from(".")),
     };
     let request = Request {
         url: args.url,
@@ -131,30 +149,9 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
         );
     }
 
-    let cancel = CancellationToken::new();
-    tokio::spawn({
-        let cancel = cancel.clone();
-        async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                cancel.cancel();
-            }
-        }
-    });
-
+    let cancel = pause_on_ctrl_c();
     let bar = progress_bar(info.total, info.resumed_bytes);
-    let ticker = tokio::spawn({
-        let progress = download.progress();
-        let bar = bar.clone();
-        async move {
-            loop {
-                let snap = progress.snapshot();
-                bar.set_position(snap.downloaded);
-                bar.set_message(status_line(&snap));
-                tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-        }
-    });
-
+    let ticker = show_progress(download.progress(), bar.clone());
     let started = Instant::now();
     let result = download.run(cancel).await;
     ticker.abort();
@@ -162,15 +159,7 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
 
     match result? {
         Outcome::Completed(path) => {
-            let secs = started.elapsed().as_secs_f64();
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            let fetched = size.saturating_sub(info.resumed_bytes);
-            println!(
-                "Done       {} in {:.1}s ({}/s)",
-                path.display(),
-                secs,
-                HumanBytes((fetched as f64 / secs.max(0.001)) as u64)
-            );
+            report_done(&path, started, info.resumed_bytes);
             Ok(ExitCode::SUCCESS)
         }
         Outcome::Paused if info.resumable => {
@@ -184,6 +173,177 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::from(130))
         }
     }
+}
+
+async fn run_stream(
+    args: Args,
+    client: Client,
+    headers: Vec<(String, String)>,
+    options: Options,
+) -> anyhow::Result<ExitCode> {
+    let info = inspect_stream(&client, &args.url, &headers)
+        .await
+        .context("could not read the stream")?;
+    if args.list_qualities {
+        for (n, v) in info.variants.iter().enumerate() {
+            println!("{:>3}  {}", n + 1, describe(v));
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    let variant = pick(&info.variants, &args.quality)?;
+    let ffmpeg = args.ffmpeg.or_else(|| find_ffmpeg(&[]));
+    let path = match (args.output, args.dir) {
+        (Some(file), _) => file,
+        (None, dir) => {
+            let stem = file_name_from_url(&args.url)
+                .rsplit_once('.')
+                .map_or_else(|| "video".to_string(), |(stem, _)| stem.to_string());
+            dir.unwrap_or_else(|| PathBuf::from("."))
+                .join(format!("{stem}.{}", variant.extension()))
+        }
+    };
+    let request = StreamRequest {
+        url: args.url,
+        headers,
+        variant: variant.key.clone(),
+        path,
+        ffmpeg: ffmpeg.iter().cloned().collect(),
+    };
+    let download = StreamDownload::prepare(client, request, options)
+        .await
+        .context("could not start the download")?;
+    let info = download.info().clone();
+    println!("Saving to  {}", info.path.display());
+    println!("Quality    {}", describe(variant));
+    println!("Pieces     {}", info.pieces);
+    match &ffmpeg {
+        Some(ffmpeg) => println!("ffmpeg     {}", ffmpeg.display()),
+        None if variant.needs_ffmpeg() => println!(
+            "ffmpeg     not found: {}",
+            if variant.separate_audio {
+                "picture and sound cannot be joined (use --ffmpeg)"
+            } else {
+                "the video is kept as .ts"
+            }
+        ),
+        None => {}
+    }
+    if info.resumed_bytes > 0 {
+        println!(
+            "Resuming   {} already downloaded",
+            HumanBytes(info.resumed_bytes)
+        );
+    }
+
+    let cancel = pause_on_ctrl_c();
+    let bar = progress_bar(info.total, info.resumed_bytes);
+    let ticker = show_progress(download.progress(), bar.clone());
+    let started = Instant::now();
+    let result = download.run(cancel).await;
+    ticker.abort();
+    bar.finish_and_clear();
+    match result? {
+        Outcome::Completed(path) => {
+            report_done(&path, started, info.resumed_bytes);
+            Ok(ExitCode::SUCCESS)
+        }
+        Outcome::Paused => {
+            println!("Paused. Run the same command again to resume.");
+            Ok(ExitCode::from(130))
+        }
+    }
+}
+
+/// `best`, `worst`, or the best quality at or below a height (`720`, `720p`).
+fn pick<'a>(variants: &'a [Variant], quality: &str) -> anyhow::Result<&'a Variant> {
+    let quality = quality.trim().to_ascii_lowercase();
+    let found = match quality.as_str() {
+        "best" => variants.first(),
+        "worst" => variants.last(),
+        q => {
+            let height: u32 = q
+                .trim_end_matches('p')
+                .parse()
+                .with_context(|| format!("--quality must be best, worst or a height, not {q:?}"))?;
+            variants
+                .iter()
+                .find(|v| v.height.is_some_and(|h| h <= height))
+                .or(variants.last())
+        }
+    };
+    found.context("the stream offers nothing to download")
+}
+
+fn describe(v: &Variant) -> String {
+    let mut parts = Vec::new();
+    match (v.width, v.height) {
+        (Some(w), Some(h)) => parts.push(format!("{w}x{h}")),
+        (None, Some(h)) => parts.push(format!("{h}p")),
+        _ if v.audio_only => parts.push("audio only".into()),
+        _ => {}
+    }
+    match v.bandwidth {
+        Some(b) if b >= 1_000_000 => parts.push(format!("{:.1} Mbit/s", b as f64 / 1e6)),
+        Some(b) => parts.push(format!("{} kbit/s", b / 1000)),
+        None => {}
+    }
+    if let Some(size) = v.estimated_size {
+        parts.push(format!("about {}", HumanBytes(size)));
+    }
+    if let Some(codecs) = &v.codecs {
+        parts.push(codecs.clone());
+    }
+    if v.separate_audio {
+        parts.push("separate audio".into());
+    }
+    if parts.is_empty() {
+        parts.push("the only quality".into());
+    }
+    parts.join(", ")
+}
+
+/// Ctrl+C pauses, so the next run resumes.
+fn pause_on_ctrl_c() -> CancellationToken {
+    let cancel = CancellationToken::new();
+    tokio::spawn({
+        let cancel = cancel.clone();
+        async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                cancel.cancel();
+            }
+        }
+    });
+    cancel
+}
+
+fn show_progress(
+    progress: slipstream_engine::Progress,
+    bar: ProgressBar,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let snap = progress.snapshot();
+            // A stream's size is an estimate that improves as it goes.
+            if let Some(total) = snap.total {
+                bar.set_length(total);
+            }
+            bar.set_position(snap.downloaded);
+            bar.set_message(status_line(&snap));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+}
+
+fn report_done(path: &std::path::Path, started: Instant, resumed: u64) {
+    let secs = started.elapsed().as_secs_f64();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let fetched = size.saturating_sub(resumed);
+    println!(
+        "Done       {} in {:.1}s ({}/s)",
+        path.display(),
+        secs,
+        HumanBytes((fetched as f64 / secs.max(0.001)) as u64)
+    );
 }
 
 fn progress_bar(total: Option<u64>, start: u64) -> ProgressBar {
@@ -216,10 +376,35 @@ fn status_line(snap: &ProgressSnapshot) -> String {
         snap.connections,
         if snap.connections == 1 { "" } else { "s" }
     );
+    const CELLS: u64 = 50;
+    if let Some(stream) = &snap.stream {
+        if stream.joining {
+            return "joining into one file with ffmpeg…".into();
+        }
+        let pieces = stream.pieces.max(1);
+        let map: String = (0..CELLS)
+            .map(|i| {
+                let (lo, hi) = (
+                    i * pieces / CELLS,
+                    ((i + 1) * pieces / CELLS).max(i * pieces / CELLS + 1),
+                );
+                let done: u64 = stream
+                    .runs
+                    .iter()
+                    .map(|[a, b]| (*b).min(hi).saturating_sub((*a).max(lo)))
+                    .sum();
+                match done as f64 / (hi - lo) as f64 {
+                    f if f >= 0.999 => '█',
+                    f if f > 0.0 => '▓',
+                    _ => '·',
+                }
+            })
+            .collect();
+        return format!("{map}  {}/{} pieces  {conns}", stream.done, stream.pieces);
+    }
     let Some(total) = snap.total.filter(|&t| t > 0 && !snap.segments.is_empty()) else {
         return conns;
     };
-    const CELLS: u64 = 50;
     let map: String = (0..CELLS)
         .map(|i| {
             let (lo, hi) = (i * total / CELLS, (i + 1) * total / CELLS);

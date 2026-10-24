@@ -6,8 +6,11 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use slipstream_manager::{Category, Event, Id, Item, Manager, NewDownload, Settings, Status};
-use slipstream_test_server::{MB, data, start};
+use slipstream_engine::stream_work_dir;
+use slipstream_manager::{
+    Category, Event, Id, Item, Manager, NewDownload, Settings, Status, StreamChoice,
+};
+use slipstream_test_server::{MB, Server, data, start};
 use tempfile::TempDir;
 
 type Events = Arc<Mutex<Vec<Event>>>;
@@ -527,4 +530,196 @@ async fn keeps_downloaded_data_when_the_link_expires() {
     h.manager.resume(&[id]);
     let done = h.completed(id).await;
     assert!(std::fs::read(done.path.unwrap()).unwrap() == content);
+}
+
+/// A short HLS video at `v/index.m3u8`; returns the extension the finished
+/// file will have. With ffmpeg installed the manager uses it to make an
+/// MP4, so the video must be real; without, made-up pieces do and the
+/// video stays a `.ts`.
+fn serve_video(server: &Server, ffmpeg: Option<&Path>) -> &'static str {
+    let Some(ffmpeg) = ffmpeg else {
+        let mut playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n".to_string();
+        for i in 0..12 {
+            server.add_file(
+                &format!("v/{i}.ts"),
+                data(20_000 + i * 1000, i as u64),
+                None,
+            );
+            playlist.push_str(&format!("#EXTINF:2,\n{i}.ts\n"));
+        }
+        server.add_file(
+            "v/index.m3u8",
+            (playlist + "#EXT-X-ENDLIST\n").into_bytes(),
+            None,
+        );
+        return "ts";
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &str| {
+        let ok = std::process::Command::new(ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y"])
+            .args(args.split(' '))
+            .current_dir(dir.path())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "ffmpeg {args}");
+    };
+    run(
+        "-f lavfi -i testsrc=duration=6:size=160x120:rate=10 -f lavfi -i sine=duration=6 -c:v mpeg4 -c:a aac -shortest src.mp4",
+    );
+    run(
+        "-i src.mp4 -c copy -bsf:v dump_extra -f hls -hls_time 1 -hls_playlist_type vod index.m3u8",
+    );
+    for entry in std::fs::read_dir(dir.path()).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().into_string().unwrap();
+        server.add_file(
+            &format!("v/{name}"),
+            std::fs::read(entry.path()).unwrap(),
+            None,
+        );
+    }
+    "mp4"
+}
+
+fn best_quality() -> Option<StreamChoice> {
+    Some(StreamChoice {
+        quality: "best".into(),
+        ..StreamChoice::default()
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn downloads_a_video_stream() {
+    let h = Harness::new();
+    let (server, _) = start(Vec::new()).await;
+    let ext = serve_video(&server, h.manager.ffmpeg().as_deref());
+    // Slow enough for a few progress updates.
+    server.per_conn_rate.store(60_000, Ordering::SeqCst);
+    h.manager.start();
+    let path = h.downloads.path().join("Video").join("Clip.mp4");
+    let item = h
+        .manager
+        .add_download(NewDownload {
+            url: server.url("v/index.m3u8"),
+            path: Some(path.clone()),
+            start: true,
+            stream: best_quality(),
+            ..NewDownload::default()
+        })
+        .unwrap();
+    let done = h.completed(item.id).await;
+    let saved = done.path.clone().unwrap();
+    assert_eq!(saved.extension().unwrap(), ext);
+    assert_eq!(
+        std::fs::metadata(&saved).unwrap().len(),
+        done.total.unwrap()
+    );
+    assert!(!stream_work_dir(&path).exists());
+    let reported_pieces = h.events.lock().unwrap().iter().any(|e| {
+        matches!(e, Event::Progress { items, .. }
+            if items.iter().any(|l| l.stream.as_ref().is_some_and(|s| s.pieces > 0)))
+    });
+    assert!(reported_pieces, "progress shows the stream's pieces");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manifest_links_become_streams() {
+    let h = Harness::new();
+    let report = h.manager.add(
+        &[
+            "https://cdn.example/show/master.m3u8".to_string(),
+            "https://cdn.example/show/movie.mp4".to_string(),
+        ],
+        &[],
+        false,
+    );
+    assert_eq!(report.added[0].stream, Some(StreamChoice::default()));
+    assert_eq!(report.added[1].stream, None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn removing_a_stream_deletes_its_pieces() {
+    let h = Harness::new();
+    let (server, _) = start(Vec::new()).await;
+    serve_video(&server, None);
+    server.per_conn_rate.store(40_000, Ordering::SeqCst);
+    h.manager.start();
+    let path = h.downloads.path().join("slow.mp4");
+    let item = h
+        .manager
+        .add_download(NewDownload {
+            url: server.url("v/index.m3u8"),
+            path: Some(path.clone()),
+            start: true,
+            stream: best_quality(),
+            ..NewDownload::default()
+        })
+        .unwrap();
+    h.wait(item.id, |i| i.downloaded > 0).await;
+    assert!(stream_work_dir(&path).is_dir());
+    h.manager.remove(&[item.id], true).await;
+    assert!(!stream_work_dir(&path).exists());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn installs_ffmpeg_from_a_zip() {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    // A stand-in for ffmpeg that answers -version, inside a folder as in
+    // the real builds.
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file("build/README.txt", SimpleFileOptions::default())
+        .unwrap();
+    zip.write_all(b"hello").unwrap();
+    zip.start_file(
+        "build/bin/ffmpeg",
+        SimpleFileOptions::default().unix_permissions(0o644),
+    )
+    .unwrap();
+    zip.write_all(b"#!/bin/sh\necho ffmpeg version test\n")
+        .unwrap();
+    let bytes = zip.finish().unwrap().into_inner();
+
+    let h = Harness::new();
+    let (server, _) = start(Vec::new()).await;
+    server.add_file("tools/ffmpeg.zip", bytes, Some("application/zip"));
+    h.manager
+        .install_ffmpeg_from(&server.url("tools/ffmpeg.zip"))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while h.manager.ffmpeg_status().installing {
+        assert!(Instant::now() < deadline, "still installing");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let status = h.manager.ffmpeg_status();
+    assert_eq!(status.error, None);
+    let installed = h.data_dir.path().join("ffmpeg").join("ffmpeg");
+    assert_eq!(status.path.as_deref(), Some(installed.as_path()));
+    assert!(
+        !h.data_dir
+            .path()
+            .join("ffmpeg/ffmpeg-download.zip")
+            .exists()
+    );
+    assert!(
+        h.events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, Event::Ffmpeg { .. }))
+    );
+
+    // A broken download is reported, not installed.
+    server.add_file("tools/broken.zip", b"not a zip".to_vec(), None);
+    h.manager
+        .install_ffmpeg_from(&server.url("tools/broken.zip"))
+        .unwrap();
+    while h.manager.ffmpeg_status().installing {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(h.manager.ffmpeg_status().error.unwrap().contains("unpack"));
 }

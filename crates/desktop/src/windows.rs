@@ -24,6 +24,18 @@ pub struct PendingLink {
     pub file_name: Option<String>,
     pub file_size: Option<u64>,
     pub from_browser: bool,
+    /// Set for a video the extension found playing on a page.
+    pub media: Option<MediaHint>,
+}
+
+/// A video found on a page: what kind of link it is, and the page's title
+/// to name the file after.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaHint {
+    /// "hls", "dash" or "file".
+    pub kind: String,
+    pub title: Option<String>,
 }
 
 /// One link in a "download all links" list.

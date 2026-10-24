@@ -4,6 +4,7 @@
 //! [`Event`]s through an [`EventSink`].
 
 mod category;
+pub mod ffmpeg;
 mod store;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -16,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use slipstream_engine::probe::file_name_from_url;
 use slipstream_engine::segments::SegmentView;
 use slipstream_engine::{
-    Client, ClientOptions, Download, Options, Outcome, Output, Progress, RateLimiter, Request, Url,
-    build_client, partial_files, probe,
+    Client, ClientOptions, Download, Options, Outcome, Output, Progress, RateLimiter, Request,
+    StreamDownload, StreamKind, StreamProgress, StreamRequest, Url, Variant, VariantKey,
+    build_client, find_ffmpeg, inspect_stream, partial_files, probe, stream_kind, stream_work_dir,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -78,6 +80,19 @@ pub struct Item {
     /// Open the file as soon as it finishes.
     #[serde(default)]
     pub open_when_done: bool,
+    /// Set for a video stream (HLS or DASH): the quality to download.
+    #[serde(default)]
+    pub stream: Option<StreamChoice>,
+}
+
+/// The quality chosen for a video stream.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct StreamChoice {
+    /// Empty for "the best on offer".
+    pub variant: VariantKey,
+    /// How the quality was described when chosen, e.g. "1280×720".
+    pub quality: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -103,6 +118,8 @@ pub struct Settings {
     pub show_progress: bool,
     /// Show the "Download complete" window when a download finishes.
     pub show_complete: bool,
+    /// ffmpeg chosen by the user; otherwise one is looked for.
+    pub ffmpeg_path: Option<PathBuf>,
 }
 
 impl Default for Settings {
@@ -120,6 +137,7 @@ impl Default for Settings {
             show_file_info: true,
             show_progress: true,
             show_complete: true,
+            ffmpeg_path: None,
         }
     }
 }
@@ -158,6 +176,8 @@ pub struct Live {
     /// Each piece of the file and whether a connection is on it, for the
     /// segment map and the connections table.
     pub segments: Vec<SegmentView>,
+    /// For a video stream: its pieces, and when they are being joined.
+    pub stream: Option<StreamProgress>,
 }
 
 /// What a link points to, learned by asking the server before adding it.
@@ -171,6 +191,8 @@ pub struct LinkInfo {
     pub content_type: Option<String>,
     /// The server sent a web page instead of the file (an expired link).
     pub web_page: bool,
+    /// The link is a video stream's manifest, to be opened as a stream.
+    pub stream: Option<StreamKind>,
     pub category: Category,
     /// A free file name in the category's folder.
     pub suggested_path: PathBuf,
@@ -187,6 +209,37 @@ pub struct NewDownload {
     pub category: Option<Category>,
     pub description: String,
     pub start: bool,
+    /// For a video stream, the quality chosen.
+    pub stream: Option<StreamChoice>,
+}
+
+/// What a video stream offers, for choosing a quality.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamLinkInfo {
+    pub kind: StreamKind,
+    /// Best first.
+    pub variants: Vec<Variant>,
+    /// Seconds.
+    pub duration: Option<f64>,
+    /// Where videos are saved.
+    pub folder: PathBuf,
+    /// Whether ffmpeg is at hand to join picture and sound.
+    pub ffmpeg: bool,
+}
+
+/// Where ffmpeg stands, for the windows that need it.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FfmpegStatus {
+    pub path: Option<PathBuf>,
+    /// Whether Slipstream can fetch a copy on this computer.
+    pub can_install: bool,
+    pub installing: bool,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    /// Why the last attempt to fetch it failed.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,10 +260,14 @@ pub enum Event {
     Finished {
         item: Item,
     },
-    /// Sent every half second while anything is downloading.
+    /// Sent five times a second while anything is downloading.
     Progress {
         items: Vec<Live>,
         total_speed: f64,
+    },
+    /// ffmpeg was found, or is being fetched.
+    Ffmpeg {
+        status: FfmpegStatus,
     },
 }
 
@@ -263,6 +320,9 @@ struct State {
     next_id: Id,
     running: HashMap<Id, Running>,
     shutting_down: bool,
+    /// Fetching ffmpeg: bytes so far and size.
+    ffmpeg_install: Option<(u64, Option<u64>)>,
+    ffmpeg_error: Option<String>,
 }
 
 impl State {
@@ -309,6 +369,7 @@ impl State {
             description: String::new(),
             speed_limit: 0,
             open_when_done: false,
+            stream: stream_kind(url, None).map(|_| StreamChoice::default()),
         };
         self.next_id += 1;
         item
@@ -322,6 +383,7 @@ impl State {
             .find(|p| {
                 !p.exists()
                     && !partial_files(p)[0].exists()
+                    && !stream_work_dir(p).exists()
                     && !self.items.iter().any(|i| i.path.as_deref() == Some(p))
             })
             .expect("some numbered name is free")
@@ -383,6 +445,8 @@ impl Manager {
                 next_id,
                 running: HashMap::new(),
                 shutting_down: false,
+                ffmpeg_install: None,
+                ffmpeg_error: None,
             }),
         })))
     }
@@ -465,9 +529,116 @@ impl Manager {
             resumable: remote.ranges && remote.total.is_some(),
             content_type: remote.content_type.clone(),
             web_page: page_instead_of_file(&remote, &remote.file_name),
+            stream: stream_kind(url, remote.content_type.as_deref()),
             category,
             suggested_path,
         })
+    }
+
+    /// Lists the qualities a video stream offers.
+    pub async fn inspect_stream(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<StreamLinkInfo, String> {
+        let info = inspect_stream(&self.0.client, url, headers)
+            .await
+            .map_err(|e| describe(&e))?;
+        let folder = self.lock().settings.folder_for(Category::Video);
+        Ok(StreamLinkInfo {
+            kind: info.kind,
+            variants: info.variants,
+            duration: info.duration,
+            folder,
+            ffmpeg: self.ffmpeg().is_some(),
+        })
+    }
+
+    /// A free place for `file_name` in its category's folder.
+    pub fn suggest_path(&self, file_name: &str) -> PathBuf {
+        let st = self.lock();
+        let category = Category::from_file_name(file_name);
+        st.free_path(&st.settings.folder_for(category).join(file_name))
+    }
+
+    /// The ffmpeg to use: the one chosen in Options, one fetched earlier,
+    /// or one installed on the computer.
+    pub fn ffmpeg(&self) -> Option<PathBuf> {
+        find_ffmpeg(&self.ffmpeg_places())
+    }
+
+    /// Where ffmpeg is looked for first. A download checks again when it
+    /// needs it, so an ffmpeg fetched while it runs is used.
+    fn ffmpeg_places(&self) -> Vec<PathBuf> {
+        let chosen = self.lock().settings.ffmpeg_path.clone();
+        let fetched = ffmpeg::installed_path(self.0.store.dir());
+        chosen.into_iter().chain([fetched]).collect()
+    }
+
+    pub fn ffmpeg_status(&self) -> FfmpegStatus {
+        let path = self.ffmpeg();
+        let st = self.lock();
+        FfmpegStatus {
+            path,
+            can_install: ffmpeg::download_url().is_some(),
+            installing: st.ffmpeg_install.is_some(),
+            downloaded: st.ffmpeg_install.map_or(0, |p| p.0),
+            total: st.ffmpeg_install.and_then(|p| p.1),
+            error: st.ffmpeg_error.clone(),
+        }
+    }
+
+    /// Fetches a build of ffmpeg for this computer in the background,
+    /// reporting progress with [`Event::Ffmpeg`].
+    pub fn install_ffmpeg(&self) -> Result<(), String> {
+        let url =
+            ffmpeg::download_url().ok_or("there is no ready-made ffmpeg for this computer")?;
+        self.install_ffmpeg_from(url)
+    }
+
+    /// [`Manager::install_ffmpeg`] from a given zip.
+    pub fn install_ffmpeg_from(&self, url: &str) -> Result<(), String> {
+        {
+            let mut st = self.lock();
+            if st.ffmpeg_install.is_some() {
+                return Ok(());
+            }
+            st.ffmpeg_install = Some((0, None));
+            st.ffmpeg_error = None;
+        }
+        self.emit_ffmpeg();
+        let manager = self.clone();
+        let url = url.to_string();
+        tokio::spawn(async move {
+            let weak = Arc::downgrade(&manager.0);
+            let report = move |downloaded, total| {
+                if let Some(inner) = weak.upgrade() {
+                    let manager = Manager(inner);
+                    manager.lock().ffmpeg_install = Some((downloaded, total));
+                    manager.emit_ffmpeg();
+                }
+            };
+            let result = ffmpeg::install(
+                manager.0.client.clone(),
+                &url,
+                manager.0.store.dir(),
+                report,
+            )
+            .await;
+            {
+                let mut st = manager.lock();
+                st.ffmpeg_install = None;
+                st.ffmpeg_error = result.err();
+            }
+            manager.emit_ffmpeg();
+        });
+        Ok(())
+    }
+
+    fn emit_ffmpeg(&self) {
+        self.0.sink.emit(Event::Ffmpeg {
+            status: self.ffmpeg_status(),
+        });
     }
 
     /// A first guess from the link alone, shown while [`Manager::inspect`]
@@ -484,6 +655,7 @@ impl Manager {
             resumable: false,
             content_type: None,
             web_page: false,
+            stream: stream_kind(url, None),
             category,
         }
     }
@@ -506,6 +678,9 @@ impl Manager {
                 item.category = category;
             }
             item.description = new.description.trim().to_string();
+            if new.stream.is_some() {
+                item.stream = new.stream;
+            }
             st.items.push(item.clone());
             self.save_list(&st);
             item
@@ -777,6 +952,44 @@ impl Manager {
             ..Options::default()
         };
         let client = self.0.client.clone();
+        if let Some(choice) = &item.stream {
+            let path = match &item.path {
+                Some(path) => path.clone(),
+                None => {
+                    let st = self.lock();
+                    let stem = file_name_from_url(&item.url)
+                        .rsplit_once('.')
+                        .map_or_else(|| "video".to_string(), |(stem, _)| stem.to_string());
+                    let folder = st.settings.folder_for(Category::Video);
+                    st.free_path(&folder.join(format!("{stem}.mp4")))
+                }
+            };
+            let request = StreamRequest {
+                url: item.url.clone(),
+                headers: item.headers.clone(),
+                variant: choice.variant.clone(),
+                path,
+                ffmpeg: self
+                    .ffmpeg_places()
+                    .into_iter()
+                    .chain(self.ffmpeg())
+                    .collect(),
+            };
+            let download = tokio::select! {
+                _ = cancel.cancelled() => return Ok(Outcome::Paused),
+                download = StreamDownload::prepare(client, request, options) => download?,
+            };
+            let info = download.info().clone();
+            self.started(
+                id,
+                download.progress(),
+                &info.path,
+                info.total,
+                true,
+                info.resumed_bytes,
+            );
+            return download.run(cancel.clone()).await;
+        }
         let request = |output| Request {
             url: item.url.clone(),
             headers: item.headers.clone(),
@@ -812,27 +1025,47 @@ impl Manager {
             download = prepare => download?,
         };
 
+        let info = download.info();
+        self.started(
+            id,
+            download.progress(),
+            &info.path,
+            info.total,
+            info.resumable,
+            info.resumed_bytes,
+        );
+        download.run(cancel.clone()).await
+    }
+
+    /// Records what a download learned while preparing, before it runs.
+    fn started(
+        &self,
+        id: Id,
+        progress: Progress,
+        path: &Path,
+        total: Option<u64>,
+        resumable: bool,
+        resumed: u64,
+    ) {
         let event = {
             let mut st = self.lock();
-            let info = download.info();
             if let Some(running) = st.running.get_mut(&id) {
-                running.progress = Some(download.progress());
-                running.speed.restart(info.resumed_bytes);
+                running.progress = Some(progress);
+                running.speed.restart(resumed);
             }
             let event = st.item_mut(id).map(|item| {
-                item.file_name = file_name_of(&info.path);
+                item.file_name = file_name_of(path);
                 item.category = Category::from_file_name(&item.file_name);
-                item.path = Some(info.path.clone());
-                item.total = info.total;
-                item.resumable = Some(info.resumable);
-                item.downloaded = info.resumed_bytes;
+                item.path = Some(path.to_path_buf());
+                item.total = total;
+                item.resumable = Some(resumable);
+                item.downloaded = resumed;
                 Event::Updated { item: item.clone() }
             });
             self.save_list(&st);
             event
         };
         self.emit_all(event.into_iter().collect());
-        download.run(cancel.clone()).await
     }
 
     fn finish(&self, id: Id, result: slipstream_engine::Result<Outcome>) {
@@ -915,6 +1148,7 @@ impl Manager {
                     speed,
                     connections: snap.connections,
                     segments: snap.segments,
+                    stream: snap.stream,
                 });
             }
             // After the last download stops, send one empty update so the
@@ -982,6 +1216,7 @@ fn delete_item_files(item: &Item) {
     for partial in partial_files(path) {
         let _ = fs::remove_file(partial);
     }
+    let _ = fs::remove_dir_all(stream_work_dir(path));
 }
 
 fn numbered(base: &Path, n: u32) -> PathBuf {

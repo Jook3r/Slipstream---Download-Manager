@@ -130,6 +130,46 @@ export function fmtEta(seconds) {
   return `${h} hour${h > 1 ? 's' : ''} ${Math.floor((s % 3600) / 60)} min`;
 }
 
+/** A video's length: 4:05, or 1:02:03. */
+export function fmtDuration(seconds) {
+  const s = Math.round(seconds);
+  const pad = (n) => String(n).padStart(2, '0');
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
+/** One quality of a video stream: "720p (1280×720) · 2.1 Mbit/s · about 160 MB". */
+export function qualityLabel(v) {
+  const parts = [];
+  if (v.height) parts.push(v.width ? `${v.height}p (${v.width}×${v.height})` : `${v.height}p`);
+  else if (v.audioOnly) parts.push('Audio only');
+  if (v.bandwidth) {
+    parts.push(v.bandwidth >= 1e6 ? `${(v.bandwidth / 1e6).toFixed(1)} Mbit/s` : `${Math.round(v.bandwidth / 1000)} kbit/s`);
+  }
+  if (v.estimatedSize) parts.push(`about ${fmtBytes(v.estimatedSize)}`);
+  return parts.join(' · ') || 'Standard quality';
+}
+
+/** The short form kept with the download: "720p", "Audio only". */
+export const qualityShort = (v) => (v.height ? `${v.height}p` : v.audioOnly ? 'Audio only' : '');
+
+/** The extension the finished video gets (as in the engine's Variant). */
+export const variantExtension = (v) => (v.container === 'webm' ? 'webm' : v.audioOnly ? 'm4a' : 'mp4');
+
+/** Whether ffmpeg is needed to end up with a normal video file. */
+export const needsFfmpeg = (v) => v.separateAudio || v.container === 'ts';
+
+/** A page title made safe as a file name. */
+export function safeFileName(text) {
+  return (text ?? '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 120);
+}
+
 const dateFmt = new Intl.DateTimeFormat(undefined, {
   month: 'short',
   day: 'numeric',

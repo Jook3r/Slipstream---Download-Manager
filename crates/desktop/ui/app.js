@@ -208,7 +208,10 @@ function updateRow(tr, item, queue) {
   setText(name, item.fileName);
   tr.title = item.path ?? item.url;
   setText(tr.querySelector('.q'), String(queue.get(item.id) ?? ''));
-  setText(tr.querySelector('.size'), fmtBytes(item.total));
+  const size = tr.querySelector('.size');
+  setText(size, fmtBytes(item.total));
+  // A stream's size is an estimate until it is done.
+  size.title = item.stream && item.status !== 'completed' && item.total ? 'Estimated until the video has finished' : '';
   tr.querySelector('.mini i').style.width = `${pct ?? 0}%`;
   const stext = tr.querySelector('.stext');
   setText(stext, statusText(item));
@@ -479,6 +482,7 @@ function openOptions() {
   $('set-limit-unit').value = String(unit);
   $('set-limit').value = s.speedLimit > 0 ? +(s.speedLimit / unit).toFixed(2) : 2;
   syncLimitFields();
+  refreshFfmpeg();
   showTab('opt-general');
   $('dlg-options').returnValue = '';
   $('dlg-options').showModal();
@@ -511,6 +515,30 @@ function renderRemembered() {
       return row;
     }),
   );
+}
+
+async function refreshFfmpeg() {
+  showFfmpeg(await invoke('ffmpeg_status'));
+}
+
+/** The Video tab: where ffmpeg is, or how to get it. */
+function showFfmpeg(status) {
+  const where = $('set-ffmpeg');
+  where.textContent = status.path ? status.path : 'Not found on this computer.';
+  where.classList.toggle('missing', !status.path);
+  $('set-ffmpeg-get').hidden = !status.canInstall;
+  $('set-ffmpeg-get').disabled = status.installing;
+  $('set-ffmpeg-get').textContent = status.path ? 'Get the latest ffmpeg' : 'Get ffmpeg';
+  const progress = $('set-ffmpeg-progress');
+  progress.className = `hint${status.error && !status.installing ? ' error' : ''}`;
+  if (status.installing) {
+    progress.textContent = status.total
+      ? `Downloading… ${Math.floor((status.downloaded * 100) / status.total)}% of ${fmtBytes(status.total)}`
+      : `Downloading… ${fmtBytes(status.downloaded)}`;
+  } else {
+    progress.textContent = status.error ? friendlyError(status.error) : '';
+  }
+  progress.title = status.error ?? '';
 }
 
 function syncLimitFields() {
@@ -578,6 +606,9 @@ function onEvent(event) {
       state.live.delete(event.id);
       state.selected.delete(event.id);
       break;
+    case 'ffmpeg':
+      showFfmpeg(event.status);
+      return;
     case 'progress':
       state.live = new Map(event.items.map((live) => [live.id, live]));
       state.totalSpeed = event.totalSpeed;
@@ -735,6 +766,11 @@ function wire() {
   for (const b of document.querySelectorAll('#dlg-options .tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
   $('set-conns').addEventListener('input', (e) => ($('set-conns-out').value = e.target.value));
   $('set-limit-on').addEventListener('change', syncLimitFields);
+  $('set-ffmpeg-get').addEventListener('click', () => call('install_ffmpeg'));
+  $('set-ffmpeg-choose').addEventListener('click', async () => {
+    const status = await call('choose_ffmpeg');
+    if (status) showFfmpeg(status);
+  });
   $('set-browse').addEventListener('click', async () => {
     const dir = await call('pick_folder');
     if (dir) $('set-dir').value = dir;

@@ -36,6 +36,8 @@ body.dialog-window {
 .filecard .size { font-weight: 600; font-variant-numeric: tabular-nums; }
 .filecard .resume { color: var(--muted); font-size: 11px; }
 .info .notice, .info .exists { grid-column: 1 / -1; }
+.info:not(.stream) .stream-only { display: none; }
+.info select#quality { width: 100%; }
 .notice {
   display: flex;
   flex-direction: column;
