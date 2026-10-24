@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Download File Info</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="window.css">
+  <script type="module" src="info.js"></script>
+</head>
+<body class="dialog-window">
+  <form class="info" id="form" autocomplete="off">
+    <div class="grid">
+      <label for="url">URL</label>
+      <input id="url" class="field mono" type="text" spellcheck="false">
+
+      <label for="category">Category</label>
+      <select id="category" class="field"></select>
+
+      <label for="path">Save As</label>
+      <div class="row">
+        <input id="path" class="field mono" type="text" spellcheck="false">
+        <button type="button" class="btn small" id="browse" title="Choose where to save">…</button>
+      </div>
+
+      <label class="check"><input type="checkbox" id="remember"> <span id="remember-label">Remember this path for this category</span></label>
+
+      <label for="description">Description</label>
+      <input id="description" class="field" type="text">
+    </div>
+
+    <aside class="filecard">
+      <span class="big-icon cat" id="icon"></span>
+      <span class="size" id="size">Checking…</span>
+      <span class="resume" id="resume"></span>
+    </aside>
+
+    <p class="hint message" id="message" role="status"></p>
+
+    <div class="buttons">
+      <button type="submit" class="btn" value="later">Download Later</button>
+      <button type="submit" class="btn primary" value="start" id="start">Start Download</button>
+      <button type="button" class="btn" id="cancel">Cancel</button>
+    </div>
+  </form>
+</body>
+</html>

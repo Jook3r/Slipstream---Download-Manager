@@ -5,12 +5,16 @@ edition.workspace = true
 description = "Slipstream download manager"
 
 [dependencies]
+getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+slipstream-bridge = { path = "../bridge" }
 slipstream-manager = { path = "../manager" }
 tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.8.3"
 tauri-plugin-notification = "2.7.0"
 tauri-plugin-opener = "2.7.2"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
 
 [build-dependencies]
 tauri-build = "2.7.4"

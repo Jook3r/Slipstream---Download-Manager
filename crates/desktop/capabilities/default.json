@@ -1,6 +1,17 @@
 {
   "identifier": "default",
-  "description": "What the main window's page may call",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "What Slipstream's windows may call",
+  "windows": [
+    "main",
+    "info-*",
+    "progress-*",
+    "batch-*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "core:window:allow-set-size",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
 }

@@ -1,33 +1,84 @@
 # Slipstream
 
 A multi-connection download manager for Windows, macOS and Linux, modelled on
-Internet Download Manager. It has a desktop app and a command-line tool that
-share the same download engine.
+Internet Download Manager: a desktop app, a browser extension that hands it
+your downloads, and a command-line tool, all sharing one download engine.
 
 ![Slipstream's main window](docs/screenshot.png)
+
+## Works like IDM
+
+Click a download link in your browser and Slipstream takes it over. As in IDM,
+a **Download File Info** window asks where to save it, then each download gets
+its own **progress window**: status, transfer rate, time left, a per-download
+speed limiter, and the connections at work. When it finishes, the same window
+becomes **Download complete** with Open and Open folder buttons.
+
+| Download File Info | Progress window |
+|---|---|
+| ![Download File Info window](docs/file-info.png) | ![A download's progress window](docs/progress.png) |
+
+The main window follows IDM's layout: a toolbar (Add URL, Resume, Stop, Stop
+All, Delete, Delete Completed, Options, Start Queue, Stop Queue), a category
+tree (Compressed, Documents, Music, Programs, Video… plus Unfinished and
+Finished), and IDM's columns, with light and dark themes.
 
 ## Desktop app
 
 - **Fast downloads**: up to 32 connections per file, with IDM-style dynamic
-  segmentation (see below). The details panel shows a live map of which parts
-  of the file have arrived.
+  segmentation (see below). The progress window shows a live map of which
+  parts of the file have arrived.
 - **Pause and resume**, even after closing the app or a crash. Unfinished
   downloads continue when Slipstream starts (can be turned off).
 - **Queue**: a set number of downloads run at once (3 by default); the rest
-  wait their turn. "Download later" adds links without starting them.
-- **Categories**: files are sorted into Video, Music, Documents, Compressed,
-  Programs and Images folders inside your download folder, and the sidebar
-  filters by category or status.
-- **Adding links**: the Add button, pasting with Ctrl+V (⌘V) anywhere in the
-  window, or dragging links in from a browser.
+  wait their turn. "Download Later" adds links without starting them.
+- **Categories**: files are sorted into Compressed, Documents, Music,
+  Programs, Video and Images folders inside your download folder. Tick
+  "Remember this path" to give a category its own folder.
+- **Adding links**: from the browser, with Add URL, by pasting with Ctrl+V
+  (⌘V) anywhere in the window, or by dragging links in. Several links at once
+  open a list to pick from.
+- **Speed limits**: overall in Options, and per download in its window.
 - **Tray icon**: closing the window keeps downloads going in the tray (can be
-  turned off). The tray menu can pause or resume everything.
-- **Notifications** when a download finishes, and a speed limit shared by all
-  downloads.
-- Light and dark themes follow the system.
+  turned off). Only one Slipstream runs at a time.
 
-Keyboard: Ctrl+N add, Ctrl+F search, Delete remove, Space pause/resume,
-Enter open a finished file, arrows to move, Ctrl+A select all.
+Keyboard: Ctrl+N add, Ctrl+F search, Delete remove, Space stop/resume,
+Enter open, arrows to move, Ctrl+A select all. Double-click a download to
+open its window.
+
+## Browser extension
+
+The `extension` folder holds one extension for Chrome, Edge, Brave, Vivaldi
+and Firefox. Until it is published in the browsers' stores, install it by
+hand:
+
+- **Chrome, Edge, Brave, Vivaldi**: open `chrome://extensions` (Edge:
+  `edge://extensions`), turn on **Developer mode**, click **Load unpacked**
+  and choose the `extension` folder.
+- **Firefox**: open `about:debugging#/runtime/this-firefox`, click **Load
+  Temporary Add-on** and choose `extension/manifest.json`. (Firefox removes
+  temporary add-ons when it restarts.)
+
+Then open Slipstream once, so it can register itself with your browsers. Help
+→ Browser integration in the app shows which browsers it found.
+
+What the extension does:
+
+- Takes over downloads of the file types on its list (IDM's list by default,
+  editable in its popup), passing along the browser's cookies, referring page
+  and user agent so downloads behind a login still work.
+- **Alt+click** a link to let the browser download it instead.
+- Right-click menu: **Download with Slipstream** on a link, and **Download
+  all links with Slipstream** on a page or a selection.
+- If Slipstream cannot be reached, the browser keeps the download, so nothing
+  is lost. The popup shows whether it is connected.
+
+How it fits together: the extension talks to `slipstream-bridge`, a small
+program the browser starts through native messaging. The bridge passes each
+link to the running app over a local connection protected by a random token
+(and starts the app if it is not running). Run `slipstream-bridge --install`
+or `--uninstall` to register or remove it by hand; the app does this itself
+every time it starts.
 
 ## Command line
 
@@ -71,11 +122,13 @@ TCP connection, which defeats the point of using several.
 
 | Path | What |
 |---|---|
-| `crates/engine` | Download engine: segmentation, resume, retries, speed limit |
+| `crates/engine` | Download engine: segmentation, resume, retries, speed limits |
 | `crates/manager` | Download list, queue, categories, settings, saving the list |
-| `crates/desktop` | Tauri desktop app; its page is plain HTML/CSS/JS in `ui/` |
+| `crates/desktop` | Tauri desktop app; its pages are plain HTML/CSS/JS in `ui/` |
+| `crates/bridge` | `slipstream-bridge`, the browser's native messaging host |
 | `crates/cli` | The `slipstream` command |
 | `crates/test-server` | A deliberately misbehaving HTTP server used by the tests |
+| `extension` | The browser extension (Manifest V3) |
 
 The app keeps its list and settings in the system's app-data folder
 (`io.github.jook3r.slipstream`).
@@ -92,18 +145,22 @@ sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
 Then:
 
 ```sh
+cargo build --workspace                     # everything, in target/debug/
 cargo run -p slipstream-desktop             # the desktop app
-cargo build --release --workspace           # both programs, in target/release/
 cargo test --workspace
 ```
 
+Keep `slipstream-bridge` in the same folder as `slipstream-desktop`; the app
+registers the bridge it finds next to itself.
+
 The GitHub Actions workflow tests and builds on Windows, macOS and Linux and
-uploads both programs as artifacts.
+uploads, for each, the app, the bridge, the command-line tool and the
+extension together.
 
 ## Roadmap
 
 1. ~~Engine: dynamic segmentation, resume, retries, speed limit~~
 2. ~~Desktop app: download list, queue, categories, tray icon~~
-3. Browser extension (Chrome/Edge/Firefox, Manifest V3) + native messaging
+3. ~~Browser extension, native messaging, IDM-style windows~~
 4. Video stream detection (HLS/DASH), ffmpeg muxing, scheduler, clipboard watch
-5. Installers (MSI, DMG), auto-update
+5. Installers (MSI, DMG), auto-update, publishing the extension

@@ -26,9 +26,18 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release --workspace
+      # The app looks for slipstream-bridge next to itself, so they ship
+      # together, with the browser extension beside them.
+      - name: Put the programs and the extension together
+        shell: bash
+        run: |
+          exe=${{ runner.os == 'Windows' && '.exe' || '' }}
+          mkdir -p dist
+          for name in slipstream-desktop slipstream-bridge slipstream; do
+            cp "target/release/$name$exe" dist/
+          done
+          cp -r extension dist/extension
       - uses: actions/upload-artifact@v6
         with:
           name: slipstream-${{ runner.os }}
-          path: |
-            target/release/slipstream${{ runner.os == 'Windows' && '.exe' || '' }}
-            target/release/slipstream-desktop${{ runner.os == 'Windows' && '.exe' || '' }}
+          path: dist/

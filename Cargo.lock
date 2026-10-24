@@ -3828,16 +3828,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "slipstream-bridge"
+version = "0.1.0"
+dependencies = [
+ "dirs",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "winreg",
+]
+
+[[package]]
 name = "slipstream-desktop"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
  "serde",
+ "serde_json",
+ "slipstream-bridge",
  "slipstream-manager",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]

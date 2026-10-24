@@ -6,7 +6,7 @@
 mod category;
 mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use slipstream_engine::probe::file_name_from_url;
+use slipstream_engine::segments::SegmentView;
 use slipstream_engine::{
     Client, ClientOptions, Download, Options, Outcome, Output, Progress, RateLimiter, Request, Url,
     build_client, partial_files, probe,
@@ -61,6 +62,17 @@ pub struct Item {
     /// Milliseconds since the Unix epoch.
     pub added_at: u64,
     pub completed_at: Option<u64>,
+    /// When the latest attempt started.
+    #[serde(default)]
+    pub last_try_at: Option<u64>,
+    #[serde(default)]
+    pub description: String,
+    /// This download's own speed limit in bytes per second; 0 means none.
+    #[serde(default)]
+    pub speed_limit: u64,
+    /// Open the file as soon as it finishes.
+    #[serde(default)]
+    pub open_when_done: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,6 +90,14 @@ pub struct Settings {
     pub resume_on_startup: bool,
     pub close_to_tray: bool,
     pub notify_on_complete: bool,
+    /// Folders picked with "Remember this path for this category".
+    pub category_dirs: BTreeMap<Category, PathBuf>,
+    /// Show the Download File Info window for links caught from a browser.
+    pub show_file_info: bool,
+    /// Show a progress window for downloads started by hand.
+    pub show_progress: bool,
+    /// Show the "Download complete" window when a download finishes.
+    pub show_complete: bool,
 }
 
 impl Default for Settings {
@@ -91,12 +111,19 @@ impl Default for Settings {
             resume_on_startup: true,
             close_to_tray: true,
             notify_on_complete: true,
+            category_dirs: BTreeMap::new(),
+            show_file_info: true,
+            show_progress: true,
+            show_complete: true,
         }
     }
 }
 
 impl Settings {
     pub fn folder_for(&self, category: Category) -> PathBuf {
+        if let Some(dir) = self.category_dirs.get(&category) {
+            return dir.clone();
+        }
         match category.folder() {
             Some(sub) if self.use_categories => self.download_dir.join(sub),
             _ => self.download_dir.clone(),
@@ -123,8 +150,36 @@ pub struct Live {
     /// Bytes per second, smoothed.
     pub speed: f64,
     pub connections: usize,
-    /// `[start, end, written]` for each piece, for the segment map.
-    pub segments: Vec<[u64; 3]>,
+    /// Each piece of the file and whether a connection is on it, for the
+    /// segment map and the connections table.
+    pub segments: Vec<SegmentView>,
+}
+
+/// What a link points to, learned by asking the server before adding it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkInfo {
+    pub url: String,
+    pub file_name: String,
+    pub total: Option<u64>,
+    pub resumable: bool,
+    pub content_type: Option<String>,
+    pub category: Category,
+    /// A free file name in the category's folder.
+    pub suggested_path: PathBuf,
+}
+
+/// One download with explicit choices, as made in the File Info window.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NewDownload {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    /// Where to save it; `None` decides when the download starts.
+    pub path: Option<PathBuf>,
+    pub category: Option<Category>,
+    pub description: String,
+    pub start: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -207,6 +262,63 @@ impl State {
     fn item_mut(&mut self, id: Id) -> Option<&mut Item> {
         self.items.iter_mut().find(|i| i.id == id)
     }
+
+    /// Why a link cannot be added, if it cannot.
+    fn refuse(&self, url: &str) -> Option<&'static str> {
+        if !Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
+            Some("not an http or https link")
+        } else if self
+            .items
+            .iter()
+            .any(|i| i.url == url && i.status != Status::Completed)
+        {
+            Some("already in the list")
+        } else {
+            None
+        }
+    }
+
+    fn new_item(&mut self, url: &str, headers: &[(String, String)], start: bool) -> Item {
+        let file_name = file_name_from_url(url);
+        let item = Item {
+            id: self.next_id,
+            url: url.to_string(),
+            headers: headers.to_vec(),
+            category: Category::from_file_name(&file_name),
+            file_name,
+            path: None,
+            total: None,
+            downloaded: 0,
+            resumable: None,
+            status: if start {
+                Status::Queued
+            } else {
+                Status::Paused
+            },
+            error: None,
+            added_at: now_ms(),
+            completed_at: None,
+            last_try_at: None,
+            description: String::new(),
+            speed_limit: 0,
+            open_when_done: false,
+        };
+        self.next_id += 1;
+        item
+    }
+
+    /// `base`, or `base (1)`, `base (2)`... whichever is not on disk and
+    /// not already the destination of another download.
+    fn free_path(&self, base: &Path) -> PathBuf {
+        (0..)
+            .map(|n| numbered(base, n))
+            .find(|p| {
+                !p.exists()
+                    && !partial_files(p)[0].exists()
+                    && !self.items.iter().any(|i| i.path.as_deref() == Some(p))
+            })
+            .expect("some numbered name is free")
+    }
 }
 
 struct Running {
@@ -218,6 +330,8 @@ struct Running {
     last_at: Instant,
     speed: f64,
     removing: bool,
+    /// This download's own speed limit, changeable while it runs.
+    limiter: Arc<RateLimiter>,
 }
 
 impl Manager {
@@ -299,43 +413,14 @@ impl Manager {
         {
             let mut st = self.lock();
             for url in urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
-                let skip = |reason: &str| Skipped {
-                    url: url.to_string(),
-                    reason: reason.to_string(),
-                };
-                if !Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
-                    report.skipped.push(skip("not an http or https link"));
+                if let Some(reason) = st.refuse(url) {
+                    report.skipped.push(Skipped {
+                        url: url.to_string(),
+                        reason: reason.to_string(),
+                    });
                     continue;
                 }
-                if st
-                    .items
-                    .iter()
-                    .any(|i| i.url == url && i.status != Status::Completed)
-                {
-                    report.skipped.push(skip("already in the list"));
-                    continue;
-                }
-                let file_name = file_name_from_url(url);
-                let item = Item {
-                    id: st.next_id,
-                    url: url.to_string(),
-                    headers: headers.to_vec(),
-                    category: Category::from_file_name(&file_name),
-                    file_name,
-                    path: None,
-                    total: None,
-                    downloaded: 0,
-                    resumable: None,
-                    status: if start {
-                        Status::Queued
-                    } else {
-                        Status::Paused
-                    },
-                    error: None,
-                    added_at: now_ms(),
-                    completed_at: None,
-                };
-                st.next_id += 1;
+                let item = st.new_item(url, headers, start);
                 st.items.push(item.clone());
                 report.added.push(item);
             }
@@ -348,6 +433,132 @@ impl Manager {
         }
         self.pump();
         report
+    }
+
+    pub fn item(&self, id: Id) -> Option<Item> {
+        self.lock().items.iter().find(|i| i.id == id).cloned()
+    }
+
+    /// Asks the server about a link without adding it: name, size, whether
+    /// it can resume, and a free place to save it.
+    pub async fn inspect(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+    ) -> Result<LinkInfo, String> {
+        let remote = probe(&self.0.client, url, headers)
+            .await
+            .map_err(|e| describe(&e))?;
+        let category = Category::from_file_name(&remote.file_name);
+        let st = self.lock();
+        let suggested_path =
+            st.free_path(&st.settings.folder_for(category).join(&remote.file_name));
+        Ok(LinkInfo {
+            url: url.to_string(),
+            file_name: remote.file_name.clone(),
+            total: remote.total,
+            resumable: remote.ranges && remote.total.is_some(),
+            content_type: remote.content_type.clone(),
+            category,
+            suggested_path,
+        })
+    }
+
+    /// A first guess from the link alone, shown while [`Manager::inspect`]
+    /// waits for the server.
+    pub fn guess(&self, url: &str) -> LinkInfo {
+        let file_name = file_name_from_url(url);
+        let category = Category::from_file_name(&file_name);
+        let st = self.lock();
+        LinkInfo {
+            url: url.to_string(),
+            suggested_path: st.free_path(&st.settings.folder_for(category).join(&file_name)),
+            file_name,
+            total: None,
+            resumable: false,
+            content_type: None,
+            category,
+        }
+    }
+
+    /// Adds one download with the choices made in the File Info window.
+    pub fn add_download(&self, new: NewDownload) -> Result<Item, String> {
+        let url = new.url.trim();
+        let item = {
+            let mut st = self.lock();
+            if let Some(reason) = st.refuse(url) {
+                return Err(reason.to_string());
+            }
+            let mut item = st.new_item(url, &new.headers, new.start);
+            if let Some(path) = new.path {
+                item.file_name = file_name_of(&path);
+                item.category = Category::from_file_name(&item.file_name);
+                item.path = Some(path);
+            }
+            if let Some(category) = new.category {
+                item.category = category;
+            }
+            item.description = new.description.trim().to_string();
+            st.items.push(item.clone());
+            self.save_list(&st);
+            item
+        };
+        self.0.sink.emit(Event::Updated { item: item.clone() });
+        self.pump();
+        Ok(item)
+    }
+
+    /// Sets one download's own speed limit (0 for none), even while it runs.
+    pub fn set_speed_limit(&self, id: Id, bytes_per_sec: u64) {
+        self.update_item(id, |item| item.speed_limit = bytes_per_sec);
+        if let Some(running) = self.lock().running.get(&id) {
+            running.limiter.set_limit(bytes_per_sec);
+        }
+    }
+
+    pub fn set_open_when_done(&self, id: Id, open: bool) {
+        self.update_item(id, |item| item.open_when_done = open);
+    }
+
+    pub fn set_description(&self, id: Id, description: &str) {
+        self.update_item(id, |item| item.description = description.trim().to_string());
+    }
+
+    /// Takes finished downloads off the list; their files stay on disk.
+    pub fn delete_completed(&self) -> usize {
+        let removed: Vec<Id> = {
+            let mut st = self.lock();
+            let ids = st
+                .items
+                .iter()
+                .filter(|i| i.status == Status::Completed)
+                .map(|i| i.id)
+                .collect();
+            st.items.retain(|i| i.status != Status::Completed);
+            self.save_list(&st);
+            ids
+        };
+        let count = removed.len();
+        self.emit_all(
+            removed
+                .into_iter()
+                .map(|id| Event::Removed { id })
+                .collect(),
+        );
+        count
+    }
+
+    fn update_item(&self, id: Id, change: impl FnOnce(&mut Item)) {
+        let event = {
+            let mut st = self.lock();
+            let event = st.item_mut(id).map(|item| {
+                change(item);
+                Event::Updated { item: item.clone() }
+            });
+            self.save_list(&st);
+            event
+        };
+        self.emit_all(event.into_iter().collect());
     }
 
     pub fn pause(&self, ids: &[Id]) {
@@ -507,7 +718,9 @@ impl Manager {
                 };
                 item.status = Status::Downloading;
                 item.error = None;
+                item.last_try_at = Some(now_ms());
                 let id = item.id;
+                let limiter = Arc::new(RateLimiter::new(item.speed_limit));
                 events.push(Event::Updated { item: item.clone() });
 
                 let cancel = CancellationToken::new();
@@ -522,6 +735,7 @@ impl Manager {
                         last_at: Instant::now(),
                         speed: 0.0,
                         removing: false,
+                        limiter,
                     },
                 );
                 started = true;
@@ -543,16 +757,18 @@ impl Manager {
         id: Id,
         cancel: &CancellationToken,
     ) -> slipstream_engine::Result<Outcome> {
-        let (item, settings) = {
+        let (item, settings, own_limiter) = {
             let st = self.lock();
-            match st.items.iter().find(|i| i.id == id) {
-                Some(item) => (item.clone(), st.settings.clone()),
-                None => return Ok(Outcome::Paused),
+            match (st.items.iter().find(|i| i.id == id), st.running.get(&id)) {
+                (Some(item), Some(running)) => {
+                    (item.clone(), st.settings.clone(), running.limiter.clone())
+                }
+                _ => return Ok(Outcome::Paused),
             }
         };
         let options = Options {
             connections: settings.connections,
-            limiter: self.0.limiter.clone(),
+            limiters: vec![self.0.limiter.clone(), own_limiter],
             ..Options::default()
         };
         let client = self.0.client.clone();
@@ -693,11 +909,7 @@ impl Manager {
                     total: snap.total,
                     speed: run.speed,
                     connections: snap.connections,
-                    segments: snap
-                        .segments
-                        .iter()
-                        .map(|s| [s.start, s.end, s.written])
-                        .collect(),
+                    segments: snap.segments,
                 });
             }
             // After the last download stops, send one empty update so the
@@ -725,6 +937,18 @@ fn delete_item_files(item: &Item) {
     for partial in partial_files(path) {
         let _ = fs::remove_file(partial);
     }
+}
+
+fn numbered(base: &Path, n: u32) -> PathBuf {
+    if n == 0 {
+        return base.to_path_buf();
+    }
+    let name = file_name_of(base);
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name.as_str(), ""),
+    };
+    base.with_file_name(format!("{stem} ({n}){ext}"))
 }
 
 fn file_name_of(path: &Path) -> String {

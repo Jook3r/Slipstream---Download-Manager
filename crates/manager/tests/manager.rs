@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use slipstream_manager::{Category, Event, Id, Item, Manager, Settings, Status};
+use slipstream_manager::{Category, Event, Id, Item, Manager, NewDownload, Settings, Status};
 use slipstream_test_server::{MB, data, start};
 use tempfile::TempDir;
 
@@ -313,4 +313,154 @@ async fn same_name_downloads_get_separate_files() {
     assert_ne!(a, b);
     assert!(std::fs::read(&a).unwrap() == content);
     assert!(std::fs::read(&b).unwrap() == content);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inspects_links_before_adding() {
+    let (server, _) = start(data(3 * MB, 10)).await;
+    let h = Harness::new();
+    let video_dir = h.downloads.path().join("Video");
+    std::fs::create_dir_all(&video_dir).unwrap();
+    std::fs::write(video_dir.join("movie.mp4"), b"already here").unwrap();
+
+    let info = h
+        .manager
+        .inspect(&server.url("files/movie.mp4"), &[])
+        .await
+        .unwrap();
+
+    assert_eq!(info.file_name, "movie.mp4");
+    assert_eq!(info.total, Some(3 * MB as u64));
+    assert!(info.resumable);
+    assert_eq!(info.category, Category::Video);
+    assert_eq!(info.suggested_path, video_dir.join("movie (1).mp4"));
+    assert!(h.manager.items().is_empty(), "inspecting must not add");
+
+    let missing = h.manager.inspect(&server.url("missing"), &[]).await;
+    assert!(missing.unwrap_err().contains("404"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adds_with_chosen_path_and_description() {
+    let content = data(2 * MB, 11);
+    let (server, _) = start(content.clone()).await;
+    let h = Harness::new();
+    h.manager.start();
+    let target = h.downloads.path().join("picked").join("renamed.iso");
+
+    let item = h
+        .manager
+        .add_download(NewDownload {
+            url: server.url("files/original.iso"),
+            path: Some(target.clone()),
+            description: "  release candidate ".into(),
+            start: true,
+            ..NewDownload::default()
+        })
+        .unwrap();
+    assert_eq!(item.file_name, "renamed.iso");
+    assert_eq!(item.description, "release candidate");
+    let done = h.completed(item.id).await;
+
+    assert_eq!(done.path.as_deref(), Some(target.as_path()));
+    assert!(std::fs::read(&target).unwrap() == content);
+    assert!(done.last_try_at.is_some());
+    assert!(
+        h.manager
+            .add_download(NewDownload {
+                url: "nonsense".into(),
+                ..NewDownload::default()
+            })
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remembers_folders_per_category() {
+    let (server, _) = start(data(10, 12)).await;
+    let h = Harness::new();
+    let music = h.downloads.path().join("My Music");
+    h.configure(|s| {
+        s.category_dirs.insert(Category::Music, music.clone());
+    });
+
+    let info = h
+        .manager
+        .inspect(&server.url("song.mp3"), &[])
+        .await
+        .unwrap();
+    assert_eq!(info.suggested_path, music.join("song.mp3"));
+    let guess = h.manager.guess(&server.url("other.pdf"));
+    assert_eq!(
+        guess.suggested_path,
+        h.downloads.path().join("Documents").join("other.pdf")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obeys_per_download_speed_limit() {
+    let (server, _) = start(data(MB, 13)).await;
+    let h = Harness::new();
+    h.manager.start();
+    let item = h
+        .manager
+        .add_download(NewDownload {
+            url: server.url("limited.bin"),
+            start: false,
+            ..NewDownload::default()
+        })
+        .unwrap();
+    h.manager.set_speed_limit(item.id, 512 * 1024);
+    assert_eq!(h.manager.item(item.id).unwrap().speed_limit, 512 * 1024);
+
+    let started = Instant::now();
+    h.manager.resume(&[item.id]);
+    h.completed(item.id).await;
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(1500),
+        "1 MB at 512 KB/s took {elapsed:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_completed_keeps_unfinished_and_files() {
+    let (server, _) = start(data(MB, 14)).await;
+    let h = Harness::new();
+    h.manager.start();
+    let done = h.add(&server.url("done.zip"));
+    let path = h.completed(done).await.path.unwrap();
+    h.manager.add(&[server.url("later.zip")], &[], false);
+
+    assert_eq!(h.manager.delete_completed(), 1);
+
+    let items = h.manager.items();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].file_name, "later.zip");
+    assert!(path.exists(), "the finished file must stay on disk");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reports_which_pieces_are_active() {
+    let (server, url) = start(data(8 * MB, 15)).await;
+    server.per_conn_rate.store(MB as u64, Ordering::SeqCst);
+    let h = Harness::new();
+    h.configure(|s| s.connections = 4);
+    h.manager.start();
+    let id = h.add(&url);
+    h.wait(id, |i| i.downloaded >= MB as u64).await;
+
+    let events = h.events.lock().unwrap();
+    let live = events
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::Progress { items, .. } => items.iter().find(|l| l.id == id).cloned(),
+            _ => None,
+        })
+        .expect("a progress event");
+    assert!(live.segments.len() >= 4);
+    assert!(live.segments.iter().filter(|s| s.active).count() >= 2);
+    assert_eq!(live.segments[0].start, 0);
 }

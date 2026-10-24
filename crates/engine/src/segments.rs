@@ -38,6 +38,16 @@ pub struct SavedSegment {
     pub written: u64,
 }
 
+/// A segment as shown to the user: how far it got, and whether a connection
+/// is working on it right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SegmentView {
+    pub start: u64,
+    pub end: u64,
+    pub written: u64,
+    pub active: bool,
+}
+
 /// Work handed to a connection: request bytes `from..to` for segment `id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Assignment {
@@ -119,6 +129,18 @@ impl SegmentMap {
                 start: s.start,
                 end: s.end,
                 written: s.written,
+            })
+            .collect()
+    }
+
+    pub fn view(&self) -> Vec<SegmentView> {
+        self.segs
+            .iter()
+            .map(|s| SegmentView {
+                start: s.start,
+                end: s.end,
+                written: s.written,
+                active: s.owner.is_some(),
             })
             .collect()
     }

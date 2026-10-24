@@ -1,0 +1,191 @@
+/* Shared by every Slipstream window: colours, type, and form controls. */
+
+:root {
+  --chrome: #f2f4f7;
+  --panel: #ffffff;
+  --sunken: #f7f8fa;
+  --border: #d9dee6;
+  --border-strong: #c3cad5;
+  --text: #1b2130;
+  --muted: #5f6b7d;
+  --faint: #98a2b3;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --accent-soft: #dbe8ff;
+  --hover: #eef2f8;
+  --selected: #cfe0fc;
+  --selected-text: #0b2a5c;
+  --track: #e3e8ef;
+  --progress: #22a33a;
+  --progress-2: #4cc35f;
+  --paused: #d39a2c;
+  --ok: #138a36;
+  --warn: #b45309;
+  --err: #d92d20;
+  --link: #1f5fd6;
+  --marker: #e0245e;
+  --shadow: 0 12px 32px rgba(16, 24, 40, 0.2);
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --chrome: #1b1f26;
+    --panel: #15181d;
+    --sunken: #1f242c;
+    --border: #2c323c;
+    --border-strong: #3a414d;
+    --text: #e4e7ec;
+    --muted: #9aa3b2;
+    --faint: #687285;
+    --accent: #4d8dff;
+    --accent-text: #0a0f1c;
+    --accent-soft: #1c3260;
+    --hover: #222831;
+    --selected: #234075;
+    --selected-text: #e8f0ff;
+    --track: #2b313b;
+    --progress: #2fb34a;
+    --progress-2: #4fd068;
+    --paused: #c99a3f;
+    --ok: #4ade80;
+    --warn: #f0b44c;
+    --err: #ff6b5f;
+    --link: #7fb0ff;
+    --marker: #ff5c8a;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--chrome);
+  color: var(--text);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+[hidden] { display: none !important; }
+
+.ic {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Buttons: plain, primary, danger. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 92px;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--hover); }
+.btn:disabled { color: var(--faint); cursor: default; }
+.btn:focus-visible, .field:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.btn.danger { background: var(--err); border-color: var(--err); color: #fff; font-weight: 600; }
+.btn.small { min-width: 0; height: 26px; padding: 0 8px; }
+
+.field, select.field, textarea.field {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--panel);
+  outline: 0;
+  user-select: text;
+  -webkit-user-select: text;
+}
+textarea.field { height: auto; padding: 6px 8px; resize: vertical; font-family: var(--mono); font-size: 12px; }
+.field:focus { border-color: var(--accent); }
+.field.mono { font-family: var(--mono); font-size: 12px; }
+input[type=checkbox], input[type=radio], input[type=range] { accent-color: var(--accent); }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+
+/* Tabs, as in IDM's dialogs. */
+.tabs { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--border-strong); }
+.tabs button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.tabs button:hover { color: var(--text); }
+.tabs button.active { background: var(--panel); border-color: var(--border-strong); color: var(--text); font-weight: 600; }
+.tab-body { background: var(--panel); }
+
+/* The IDM progress bar, and the per-connection segment map. */
+.bar {
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(var(--progress-2), var(--progress));
+  transition: width 0.4s ease;
+}
+.bar.paused > i { background: var(--paused); }
+.bar.failed > i { background: var(--err); }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 36px;
+  z-index: 50;
+  max-width: min(560px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--panel);
+  box-shadow: var(--shadow);
+  white-space: pre-line;
+}
+.toast.error { background: var(--err); color: #fff; }
+
+kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font: 11px var(--mono);
+}
+
+.cat { display: inline-flex; color: var(--muted); }
+.cat-video { color: #7c3aed; }
+.cat-music { color: #db2777; }
+.cat-documents { color: #1f6feb; }
+.cat-compressed { color: #d97706; }
+.cat-programs { color: #0d9488; }
+.cat-images { color: #16a34a; }

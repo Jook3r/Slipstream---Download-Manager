@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::io::write_all_at;
 use crate::limiter::RateLimiter;
 use crate::probe::{RemoteInfo, parse_content_range, probe};
-use crate::segments::{Assignment, Receive, SavedSegment, SegmentMap, WorkerId};
+use crate::segments::{Assignment, Receive, SegmentMap, SegmentView, WorkerId};
 use crate::state::{State, part_path, state_path};
 use crate::{Error, Result, apply_headers};
 
@@ -50,8 +50,9 @@ pub struct Options {
     pub min_split_size: u64,
     /// Consecutive failures a connection tolerates before giving up.
     pub max_retries: u32,
-    /// Shared with other downloads to cap their combined speed.
-    pub limiter: Arc<RateLimiter>,
+    /// Speed limits this download obeys, e.g. one shared by every download
+    /// plus one of its own. Empty means unlimited.
+    pub limiters: Vec<Arc<RateLimiter>>,
 }
 
 impl Default for Options {
@@ -60,7 +61,7 @@ impl Default for Options {
             connections: 8,
             min_split_size: 1 << 20,
             max_retries: 8,
-            limiter: Arc::new(RateLimiter::new(0)),
+            limiters: Vec::new(),
         }
     }
 }
@@ -104,7 +105,7 @@ pub struct ProgressSnapshot {
     pub downloaded: u64,
     pub total: Option<u64>,
     pub connections: usize,
-    pub segments: Vec<SavedSegment>,
+    pub segments: Vec<SegmentView>,
 }
 
 impl Progress {
@@ -113,7 +114,7 @@ impl Progress {
             downloaded: self.0.downloaded.load(Ordering::Relaxed),
             total: self.0.total,
             connections: self.0.connections.load(Ordering::Relaxed),
-            segments: self.0.map.lock().unwrap().saved(),
+            segments: self.0.map.lock().unwrap().view(),
         }
     }
 }
@@ -240,7 +241,7 @@ impl Download {
             total,
             file: Arc::new(file),
             shared: self.shared,
-            limiter: self.opts.limiter,
+            limiters: self.opts.limiters,
             max_retries: self.opts.max_retries,
             stop: cancel.child_token(),
             fatal: Mutex::new(None),
@@ -349,7 +350,7 @@ impl Download {
             };
             match next {
                 Some(Ok(chunk)) => {
-                    self.opts.limiter.acquire(chunk.len()).await;
+                    throttle(&self.opts.limiters, chunk.len()).await;
                     buf.extend_from_slice(&chunk);
                     self.shared
                         .downloaded
@@ -386,7 +387,7 @@ struct Ctx {
     total: u64,
     file: Arc<File>,
     shared: Arc<Shared>,
-    limiter: Arc<RateLimiter>,
+    limiters: Vec<Arc<RateLimiter>>,
     max_retries: u32,
     /// Fires on pause or on a fatal error.
     stop: CancellationToken,
@@ -450,6 +451,12 @@ async fn worker(ctx: Arc<Ctx>, id: WorkerId) {
                 }
             }
         }
+    }
+}
+
+async fn throttle(limiters: &[Arc<RateLimiter>], bytes: usize) {
+    for limiter in limiters {
+        limiter.acquire(bytes).await;
     }
 }
 
@@ -523,7 +530,7 @@ async fn fetch(ctx: &Ctx, worker: WorkerId, a: Assignment) -> Result<()> {
             }
         };
 
-        ctx.limiter.acquire(chunk.len()).await;
+        throttle(&ctx.limiters, chunk.len()).await;
         let action = ctx.shared.map.lock().unwrap().on_receive(
             worker,
             a.id,

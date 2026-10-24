@@ -90,7 +90,11 @@ async fn run(args: Args) -> anyhow::Result<ExitCode> {
     let options = Options {
         connections: args.connections.into(),
         max_retries: args.retries,
-        limiter: Arc::new(RateLimiter::new(args.limit.unwrap_or(0))),
+        limiters: args
+            .limit
+            .map(|l| Arc::new(RateLimiter::new(l)))
+            .into_iter()
+            .collect(),
         ..Default::default()
     };
     let request = Request {

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Slipstream</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="window.css">
+  <script type="module" src="progress.js"></script>
+</head>
+<body class="dialog-window">
+  <section id="progress-view" hidden>
+    <div>
+      <div class="tabs" role="tablist">
+        <button type="button" class="active" data-tab="tab-status">Download status</button>
+        <button type="button" data-tab="tab-limiter">Speed Limiter</button>
+        <button type="button" data-tab="tab-done">Options on completion</button>
+      </div>
+      <div class="tab-body pane">
+        <div id="tab-status">
+          <div class="url-line mono" id="url"></div>
+          <dl class="facts">
+            <dt>Status</dt><dd class="status" id="status"></dd>
+            <dt>File size</dt><dd id="size"></dd>
+            <dt>Downloaded</dt><dd id="downloaded"></dd>
+            <dt>Transfer rate</dt><dd id="rate"></dd>
+            <dt>Time left</dt><dd id="eta"></dd>
+            <dt>Resume capability</dt><dd id="resume"></dd>
+          </dl>
+        </div>
+        <div id="tab-limiter" class="limiter" hidden>
+          <label class="check"><input type="checkbox" id="limit-on"> Use speed limiter for this download</label>
+          <div class="row">
+            <label for="limit">Maximum download speed</label>
+            <input id="limit" class="field narrow" type="number" min="1" step="any">
+            <span>KB/sec</span>
+          </div>
+          <p class="hint">Applies right away, on top of the overall limit in Options.</p>
+        </div>
+        <div id="tab-done" class="on-done" hidden>
+          <label class="check"><input type="checkbox" id="show-complete"> Show download complete dialog</label>
+          <label class="check"><input type="checkbox" id="open-when-done"> Open the file when this download finishes</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="bar" id="bar"><i></i></div>
+
+    <div class="buttons">
+      <button type="button" class="btn" id="details-toggle"></button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="pause"></button>
+      <button type="button" class="btn" id="cancel" title="Stop the download and close this window">Cancel</button>
+    </div>
+
+    <div id="details" class="details">
+      <p class="caption">Start positions and download progress by connections</p>
+      <canvas class="segmap" id="segmap" aria-label="Which parts of the file have arrived"></canvas>
+      <div class="conn-table">
+        <table>
+          <thead><tr><th>N.</th><th>Downloaded</th><th>Info</th></tr></thead>
+          <tbody id="conns"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section id="complete-view" hidden>
+    <div class="done-head">
+      <span class="big-icon" data-icon="complete"></span>
+      <div>
+        <b>Download complete</b>
+        <div id="done-size"></div>
+      </div>
+    </div>
+    <label for="done-url">Address</label>
+    <input id="done-url" class="field mono" type="text" readonly>
+    <label for="done-path">The file saved as</label>
+    <input id="done-path" class="field mono" type="text" readonly>
+    <div class="buttons">
+      <button type="button" class="btn primary" id="open">Open</button>
+      <button type="button" class="btn" id="open-folder">Open folder</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn" id="close">Close</button>
+    </div>
+    <label class="check"><input type="checkbox" id="dont-show"> Don't show this dialog again</label>
+  </section>
+</body>
+</html>

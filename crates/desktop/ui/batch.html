@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Download links</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="window.css">
+  <script type="module" src="batch.js"></script>
+</head>
+<body class="dialog-window">
+  <div class="batch-head" id="chips" aria-label="Choose by type"></div>
+  <div class="links">
+    <table>
+      <colgroup><col class="c-check"><col class="c-name"><col class="c-type"><col></colgroup>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="all" aria-label="Select all"></th>
+          <th>File name</th>
+          <th>Type</th>
+          <th>Address</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="buttons">
+    <span class="hint" id="count"></span>
+    <span class="spacer"></span>
+    <button type="button" class="btn" id="later">Download Later</button>
+    <button type="button" class="btn primary" id="start">Start Download</button>
+    <button type="button" class="btn" id="cancel">Cancel</button>
+  </div>
+</body>
+</html>

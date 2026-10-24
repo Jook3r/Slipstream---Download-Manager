@@ -4,71 +4,71 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Slipstream</title>
+  <link rel="stylesheet" href="common.css">
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
 </head>
 <body>
+  <nav class="menubar" id="menubar" aria-label="Menu">
+    <button data-menu="tasks">Tasks</button>
+    <button data-menu="file">File</button>
+    <button data-menu="downloads">Downloads</button>
+    <button data-menu="view">View</button>
+    <button data-menu="help">Help</button>
+  </nav>
+
   <header class="toolbar">
-    <button id="btn-add" class="primary" data-icon="plus" title="Add links (Ctrl+N)">Add</button>
-    <span class="sep"></span>
-    <button id="btn-resume" data-icon="play" title="Resume selected">Resume</button>
-    <button id="btn-pause" data-icon="pause" title="Pause selected">Pause</button>
-    <button id="btn-remove" data-icon="trash" title="Remove selected (Delete)">Remove</button>
-    <span class="sep"></span>
-    <button id="btn-resume-all" data-icon="playAll" title="Resume every download">Resume all</button>
-    <button id="btn-pause-all" data-icon="pauseAll" title="Pause every download">Pause all</button>
+    <button id="tb-add" class="tool t-add" data-icon="addUrl" title="Add a download (Ctrl+N)"><span>Add URL</span></button>
+    <button id="tb-resume" class="tool t-resume" data-icon="resume" title="Resume the selected downloads"><span>Resume</span></button>
+    <button id="tb-stop" class="tool t-stop" data-icon="stop" title="Stop the selected downloads"><span>Stop</span></button>
+    <button id="tb-stop-all" class="tool t-stopall" data-icon="stopAll" title="Stop every download"><span>Stop All</span></button>
+    <span class="tsep"></span>
+    <button id="tb-delete" class="tool t-delete" data-icon="delete" title="Delete the selected downloads (Delete)"><span>Delete</span></button>
+    <button id="tb-delete-done" class="tool t-deldone" data-icon="deleteDone" title="Take finished downloads off the list"><span>Delete Completed</span></button>
+    <button id="tb-options" class="tool t-options" data-icon="options" title="Options"><span>Options</span></button>
+    <span class="tsep"></span>
+    <button id="tb-start-queue" class="tool t-startq" data-icon="startQueue" title="Put every stopped download back in the queue"><span>Start Queue</span></button>
+    <button id="tb-stop-queue" class="tool t-stopq" data-icon="stopQueue" title="Hold downloads waiting in the queue"><span>Stop Queue</span></button>
     <span class="spacer"></span>
     <label class="search" data-icon="search">
-      <input id="search" type="search" placeholder="Search downloads" aria-label="Search downloads">
+      <input id="search" type="search" placeholder="Search" aria-label="Search downloads">
     </label>
-    <button id="btn-folder" class="icon-only" data-icon="folder" title="Open download folder" aria-label="Open download folder"></button>
-    <button id="btn-settings" class="icon-only" data-icon="settings" title="Settings" aria-label="Settings"></button>
   </header>
 
   <div class="layout">
-    <nav class="sidebar" id="sidebar" aria-label="Filters"></nav>
-
-    <main class="content">
-      <div class="table-wrap" id="table-wrap">
-        <table class="downloads">
-          <colgroup>
-            <col class="c-name"><col class="c-size"><col class="c-status"><col class="c-speed"><col class="c-eta"><col class="c-added">
-          </colgroup>
-          <thead>
-            <tr>
-              <th data-sort="name">Name</th>
-              <th data-sort="size" class="num">Size</th>
-              <th data-sort="status">Status</th>
-              <th class="num">Speed</th>
-              <th class="num">Time left</th>
-              <th data-sort="added" class="num">Added</th>
-            </tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
-        <div class="empty" id="empty" hidden>
-          <div class="empty-icon" data-icon="download"></div>
-          <p class="empty-title" id="empty-title">No downloads yet</p>
-          <p class="empty-hint" id="empty-hint">Click <b>Add</b>, paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or drop links here.</p>
-        </div>
+    <aside class="categories" id="categories" aria-label="Categories">
+      <div class="cat-head">
+        <span>Categories</span>
+        <button id="cat-close" class="x" data-icon="close" title="Hide categories" aria-label="Hide categories"></button>
       </div>
+      <div class="tree" id="tree" role="tree"></div>
+    </aside>
 
-      <section class="details" id="details" hidden aria-label="Download details">
-        <div class="d-head">
-          <span class="d-icon" id="d-icon"></span>
-          <span class="d-name" id="d-name"></span>
-          <span class="pill" id="d-status"></span>
-        </div>
-        <canvas class="segmap" id="d-map" height="14" aria-label="Which parts of the file have downloaded"></canvas>
-        <dl class="d-grid">
-          <dt>Link</dt><dd class="mono" id="d-url"></dd>
-          <dt>Saved to</dt><dd class="mono" id="d-path"></dd>
-          <dt>Progress</dt><dd id="d-progress"></dd>
-          <dt>Connections</dt><dd id="d-conns"></dd>
-          <dt>Resume</dt><dd id="d-resume"></dd>
-          <dt class="d-error" hidden>Error</dt><dd class="d-error error" id="d-error" hidden></dd>
-        </dl>
-      </section>
+    <main class="list-wrap" id="list-wrap">
+      <table class="downloads">
+        <colgroup>
+          <col class="c-name"><col class="c-q"><col class="c-size"><col class="c-status"><col class="c-eta"><col class="c-rate"><col class="c-try"><col class="c-added"><col class="c-desc">
+        </colgroup>
+        <thead>
+          <tr>
+            <th data-sort="name">File Name</th>
+            <th data-sort="queue" class="num" title="Position in the queue">Q</th>
+            <th data-sort="size" class="num">Size</th>
+            <th data-sort="status">Status</th>
+            <th class="num">Time left</th>
+            <th data-sort="rate" class="num">Transfer rate</th>
+            <th data-sort="tried">Last Try Date</th>
+            <th data-sort="added">Date Added</th>
+            <th data-sort="description">Description</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty" hidden>
+        <div class="empty-icon" data-icon="download"></div>
+        <p class="empty-title" id="empty-title">No downloads yet</p>
+        <p class="empty-hint" id="empty-hint">Click a download link in your browser, click <b>Add URL</b>,<br>paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or drop one here.</p>
+      </div>
     </main>
   </div>
 
@@ -76,80 +76,123 @@
     <span id="sb-speed" class="sb-speed"></span>
     <span id="sb-counts"></span>
     <span class="spacer"></span>
-    <button id="sb-limit" class="link" title="Change in Settings"></button>
+    <button id="sb-limit" class="link" title="Change in Options"></button>
   </footer>
 
   <dialog id="dlg-add" aria-labelledby="add-title">
     <form method="dialog">
-      <h2 id="add-title">Add downloads</h2>
-      <label for="add-urls">Links, one per line</label>
-      <textarea id="add-urls" rows="6" spellcheck="false" placeholder="https://example.com/file.zip"></textarea>
-      <p class="hint" id="add-hint">Files go to your download folder, sorted by type.</p>
+      <h2 id="add-title">Enter new address to download</h2>
+      <label for="add-urls">Address <span class="hint">(several links: one per line)</span></label>
+      <textarea id="add-urls" class="field" rows="3" spellcheck="false" placeholder="https://example.com/file.zip"></textarea>
+      <p class="hint" id="add-hint"></p>
       <div class="actions">
-        <button value="cancel" formnovalidate>Cancel</button>
         <span class="spacer"></span>
-        <button value="later" id="add-later">Download later</button>
-        <button value="start" class="primary" id="add-start">Download</button>
+        <button class="btn" value="cancel" formnovalidate>Cancel</button>
+        <button class="btn primary" value="ok" id="add-ok">OK</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="dlg-remove" aria-labelledby="remove-title">
+  <dialog id="dlg-delete" aria-labelledby="delete-title">
     <form method="dialog">
-      <h2 id="remove-title">Remove downloads</h2>
-      <p id="remove-text"></p>
-      <label class="check"><input type="checkbox" id="remove-files"> Also delete the files from disk</label>
+      <h2 id="delete-title">Delete</h2>
+      <p id="delete-text"></p>
+      <label class="check"><input type="checkbox" id="delete-files"> Also delete the files from disk</label>
       <div class="actions">
         <span class="spacer"></span>
-        <button value="cancel">Cancel</button>
-        <button value="remove" class="danger">Remove</button>
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn danger" value="delete">Delete</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="dlg-settings" aria-labelledby="settings-title">
+  <dialog id="dlg-options" class="wide" aria-labelledby="options-title">
     <form method="dialog">
-      <h2 id="settings-title">Settings</h2>
-      <fieldset>
-        <legend>Saving</legend>
-        <label for="set-dir">Download folder</label>
-        <div class="row">
-          <input id="set-dir" type="text" spellcheck="false">
-          <button type="button" id="set-browse">Browse…</button>
-        </div>
-        <label class="check"><input type="checkbox" id="set-categories"> Sort into Video, Music, Documents… folders</label>
-      </fieldset>
-      <fieldset>
-        <legend>Speed</legend>
-        <label for="set-conns">Connections per download: <output id="set-conns-out"></output></label>
-        <input id="set-conns" type="range" min="1" max="32" step="1">
-        <label for="set-active">Downloads at the same time</label>
-        <input id="set-active" type="number" min="1" max="10" step="1">
-        <label class="check"><input type="checkbox" id="set-limit-on"> Limit total speed to</label>
-        <div class="row">
-          <input id="set-limit" type="number" min="1" step="any" aria-label="Speed limit">
-          <select id="set-limit-unit" aria-label="Speed limit unit">
-            <option value="1024">KB/s</option>
-            <option value="1048576">MB/s</option>
-          </select>
-        </div>
-      </fieldset>
-      <fieldset>
-        <legend>App</legend>
-        <label class="check"><input type="checkbox" id="set-resume"> Resume unfinished downloads when Slipstream starts</label>
-        <label class="check"><input type="checkbox" id="set-tray"> Keep running in the tray when the window is closed</label>
-        <label class="check"><input type="checkbox" id="set-notify"> Notify me when a download finishes</label>
-      </fieldset>
+      <h2 id="options-title">Options</h2>
+      <div class="tabs" role="tablist">
+        <button type="button" class="active" data-tab="opt-general">General</button>
+        <button type="button" data-tab="opt-save">Save To</button>
+        <button type="button" data-tab="opt-connection">Connection</button>
+      </div>
+      <div class="tab-body opt-body">
+        <section id="opt-general" class="opt-page">
+          <p class="opt-legend">When a download starts and finishes</p>
+          <label class="check"><input type="checkbox" id="set-fileinfo"> Show the Download File Info window for links from the browser</label>
+          <label class="check"><input type="checkbox" id="set-progress"> Show a progress window for each download I start</label>
+          <label class="check"><input type="checkbox" id="set-complete"> Show the "Download complete" window when a download finishes</label>
+          <label class="check"><input type="checkbox" id="set-notify"> Otherwise, show a notification</label>
+          <p class="opt-legend">Slipstream</p>
+          <label class="check"><input type="checkbox" id="set-tray"> Keep running in the tray when the window is closed</label>
+          <label class="check"><input type="checkbox" id="set-resume"> Resume unfinished downloads when Slipstream starts</label>
+        </section>
+        <section id="opt-save" class="opt-page" hidden>
+          <label for="set-dir">Download folder</label>
+          <div class="row">
+            <input id="set-dir" class="field mono" type="text" spellcheck="false">
+            <button type="button" class="btn" id="set-browse">Browse…</button>
+          </div>
+          <label class="check"><input type="checkbox" id="set-categories"> Sort into Compressed, Documents, Music, Programs, Video… folders</label>
+          <p class="opt-legend">Folders remembered for categories</p>
+          <div id="set-remembered" class="remembered"></div>
+        </section>
+        <section id="opt-connection" class="opt-page" hidden>
+          <label for="set-conns">Connections per download: <output id="set-conns-out"></output></label>
+          <input id="set-conns" type="range" min="1" max="32" step="1">
+          <label for="set-active">Downloads at the same time</label>
+          <input id="set-active" class="field narrow" type="number" min="1" max="10" step="1">
+          <label class="check"><input type="checkbox" id="set-limit-on"> Limit total download speed to</label>
+          <div class="row">
+            <input id="set-limit" class="field narrow" type="number" min="1" step="any" aria-label="Speed limit">
+            <select id="set-limit-unit" class="field narrow" aria-label="Speed limit unit">
+              <option value="1024">KB/s</option>
+              <option value="1048576">MB/s</option>
+            </select>
+          </div>
+        </section>
+      </div>
       <div class="actions">
         <span class="spacer"></span>
-        <button value="cancel">Cancel</button>
-        <button value="save" class="primary">Save</button>
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" value="save">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-integration" class="wide" aria-labelledby="integration-title">
+    <form method="dialog">
+      <h2 id="integration-title">Browser integration</h2>
+      <p id="integration-status"></p>
+      <p class="opt-legend">Install the Slipstream extension</p>
+      <ol class="steps">
+        <li><b>Chrome, Edge, Brave, Vivaldi:</b> open <code>chrome://extensions</code> (Edge: <code>edge://extensions</code>), turn on <b>Developer mode</b>, click <b>Load unpacked</b> and choose the <code>extension</code> folder that came with Slipstream.</li>
+        <li><b>Firefox:</b> open <code>about:debugging#/runtime/this-firefox</code>, click <b>Load Temporary Add-on</b> and choose <code>extension/manifest.json</code>.</li>
+        <li>Click a download link. Slipstream takes it over; hold <kbd>Alt</kbd> while clicking to let the browser download it instead.</li>
+      </ol>
+      <p class="hint" id="integration-ids"></p>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button class="btn primary" value="close">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-about" aria-labelledby="about-title">
+    <form method="dialog">
+      <div class="about">
+        <img src="icon.png" alt="" width="64" height="64">
+        <div>
+          <h2 id="about-title">Slipstream</h2>
+          <p class="hint">A multi-connection download manager for Windows, macOS and Linux.</p>
+        </div>
+      </div>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button class="btn primary" value="close">OK</button>
       </div>
     </form>
   </dialog>
 
   <div class="menu" id="menu" role="menu" hidden></div>
-  <div class="toast" id="toast" role="status" hidden></div>
   <div class="drop" id="drop" hidden><div>Drop links to download</div></div>
 </body>
 </html>

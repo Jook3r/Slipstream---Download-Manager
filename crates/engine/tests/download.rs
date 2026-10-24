@@ -262,7 +262,7 @@ async fn respects_speed_limit() {
     let (_server, url) = start(content.clone()).await;
     let dir = tempfile::tempdir().unwrap();
     let options = Options {
-        limiter: Arc::new(RateLimiter::new(MB as u64)),
+        limiters: vec![Arc::new(RateLimiter::new(MB as u64))],
         ..opts(4)
     };
 
