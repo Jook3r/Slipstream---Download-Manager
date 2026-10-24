@@ -168,6 +168,15 @@ fn opts(connections: usize) -> Options {
     }
 }
 
+/// A small minimum split size, so a connection that finishes early always
+/// finds work to take over instead of depending on exact timing.
+fn split_eagerly(connections: usize) -> Options {
+    Options {
+        min_split_size: 128 * 1024,
+        ..opts(connections)
+    }
+}
+
 async fn prepare(
     url: &str,
     dir: &std::path::Path,
@@ -249,7 +258,7 @@ async fn free_connections_split_remaining_work() {
     server.per_conn_rate.store(2 * MB as u64, Ordering::SeqCst);
     let dir = tempfile::tempdir().unwrap();
 
-    download(&url, dir.path(), opts(3)).await.unwrap();
+    download(&url, dir.path(), split_eagerly(3)).await.unwrap();
 
     assert!(read(dir.path(), "test.bin") == content);
     // The first split gives uneven pieces (4, 2 and 2 MB); connections that
@@ -328,7 +337,7 @@ async fn stops_when_file_changes_mid_download() {
     // Three connections split unevenly, so new range requests (carrying
     // If-Range) are made after the swap; responses already in flight keep
     // serving the old version consistently.
-    let dl = prepare(&url, dir.path(), opts(3)).await.unwrap();
+    let dl = prepare(&url, dir.path(), split_eagerly(3)).await.unwrap();
     let progress = dl.progress();
     let swapper = tokio::spawn({
         let server = server.clone();
