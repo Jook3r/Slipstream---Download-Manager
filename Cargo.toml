@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/engine", "crates/cli", "crates/manager", "crates/desktop", "crates/bridge", "crates/test-server"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [profile.release]
