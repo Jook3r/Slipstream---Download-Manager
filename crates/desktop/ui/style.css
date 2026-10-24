@@ -250,6 +250,7 @@ tr.selected.st-failed .stext { color: inherit; }
 .sb-speed { color: var(--text); font-weight: 600; }
 button.link { padding: 0; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
 button.link:hover { color: var(--accent); text-decoration: underline; }
+button.link.warn { color: var(--err); font-weight: 600; }
 
 /* Menus (drop-downs and right-click) */
 

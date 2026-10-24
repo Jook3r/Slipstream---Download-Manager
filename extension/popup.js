@@ -1,16 +1,32 @@
 const api = globalThis.browser ?? globalThis.chrome;
 const $ = (id) => document.getElementById(id);
 
-function showStatus(text, kind) {
+function showStatus(text, kind, detail = '') {
   $('status').textContent = text;
   $('status').className = `status ${kind}`;
+  $('detail').textContent = detail;
+  $('detail').hidden = !detail;
+}
+
+/** Turns the browser's native messaging errors into what to do about them. */
+function explain(error) {
+  if (/not found|no such native application/i.test(error)) {
+    return "Slipstream isn't set up for this browser yet. Extract the download to a folder, keep slipstream-bridge next to slipstream-desktop, and open slipstream-desktop once.";
+  }
+  if (/forbidden/i.test(error)) {
+    return "This copy of the extension isn't allowed to talk to Slipstream. Load the extension folder that came with Slipstream.";
+  }
+  if (/exited|communicating|disconnected/i.test(error)) {
+    return 'Slipstream\'s bridge was found but stopped. If you moved Slipstream, open it once from its new folder; security software may also be blocking slipstream-bridge.';
+  }
+  return "Can't reach Slipstream.";
 }
 
 async function checkStatus() {
   const result = await api.runtime.sendMessage({ type: 'status' });
   const answer = result?.answer;
   if (!result?.ok) {
-    showStatus("Can't reach Slipstream. Install the app and open it once.", 'err');
+    showStatus(explain(result?.error ?? ''), 'err', `Browser said: ${result?.error ?? 'no answer'}`);
   } else if (answer?.appRunning) {
     showStatus(`Connected to Slipstream ${answer.version}`, 'ok');
   } else {

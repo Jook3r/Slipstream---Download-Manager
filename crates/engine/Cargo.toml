@@ -17,3 +17,6 @@ tokio-util = "0.7.20"
 slipstream-test-server = { path = "../test-server" }
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["full"] }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl"] }

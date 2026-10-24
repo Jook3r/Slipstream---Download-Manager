@@ -40,6 +40,8 @@ h1 { margin: 0; font-size: 15px; }
 .status.ok { color: var(--ok); }
 .status.warn { color: var(--warn); }
 .status.err { color: var(--err); }
+.detail { margin: 4px 0 0; font: 11px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); word-break: break-word; }
+[hidden] { display: none !important; }
 .switch { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
 input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 details { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }

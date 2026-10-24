@@ -226,6 +226,9 @@ impl Download {
             .create(true)
             .truncate(false)
             .open(&part)?;
+        // Not every file system can do this (FAT drives cannot); it only
+        // makes preparing the file faster, so carry on regardless.
+        let _ = crate::io::make_sparse(&file);
         if self.info.resumed_bytes == 0 {
             file.set_len(0)?;
         }
@@ -240,6 +243,7 @@ impl Download {
             if_range: self.info.remote.if_range().map(str::to_owned),
             total,
             file: Arc::new(file),
+            part: part.clone(),
             shared: self.shared,
             limiters: self.opts.limiters,
             max_retries: self.opts.max_retries,
@@ -385,7 +389,10 @@ struct Ctx {
     headers: Vec<(String, String)>,
     if_range: Option<String>,
     total: u64,
+    /// Used to flush the data to disk; connections write through handles
+    /// of their own (see `worker`).
     file: Arc<File>,
+    part: PathBuf,
     shared: Arc<Shared>,
     limiters: Vec<Arc<RateLimiter>>,
     max_retries: u32,
@@ -423,6 +430,13 @@ impl Ctx {
 }
 
 async fn worker(ctx: Arc<Ctx>, id: WorkerId) {
+    // Each connection writes through a handle of its own. Windows performs
+    // the operations on one handle one at a time, so with a shared handle a
+    // slow write or the periodic flush would stall every connection.
+    let file = match OpenOptions::new().write(true).open(&ctx.part) {
+        Ok(file) => Arc::new(file),
+        Err(e) => return ctx.fail(e.into()),
+    };
     let mut failures = 0;
     loop {
         if ctx.stop.is_cancelled() {
@@ -432,7 +446,7 @@ async fn worker(ctx: Arc<Ctx>, id: WorkerId) {
             return;
         };
         ctx.shared.connections.fetch_add(1, Ordering::Relaxed);
-        let result = fetch(&ctx, id, assignment).await;
+        let result = fetch(&ctx, &file, id, assignment).await;
         ctx.shared.connections.fetch_sub(1, Ordering::Relaxed);
         ctx.shared.map.lock().unwrap().release(id, assignment.id);
 
@@ -465,7 +479,7 @@ fn backoff(failures: u32) -> Duration {
 }
 
 /// Downloads one assignment over one HTTP request.
-async fn fetch(ctx: &Ctx, worker: WorkerId, a: Assignment) -> Result<()> {
+async fn fetch(ctx: &Ctx, file: &Arc<File>, worker: WorkerId, a: Assignment) -> Result<()> {
     let mut req = apply_headers(ctx.client.get(&ctx.url), &ctx.headers)
         .header(RANGE, format!("bytes={}-{}", a.from, a.to - 1));
     if let Some(validator) = &ctx.if_range {
@@ -510,16 +524,16 @@ async fn fetch(ctx: &Ctx, worker: WorkerId, a: Assignment) -> Result<()> {
         };
         let chunk = match next {
             None => {
-                flush(ctx, a.id, &mut buf, &mut buf_offset).await?;
+                flush(ctx, file, a.id, &mut buf, &mut buf_offset).await?;
                 return Err(Error::Cancelled);
             }
             Some(Some(Ok(chunk))) => chunk,
             Some(Some(Err(e))) => {
-                flush(ctx, a.id, &mut buf, &mut buf_offset).await?;
+                flush(ctx, file, a.id, &mut buf, &mut buf_offset).await?;
                 return Err(e.into());
             }
             Some(None) => {
-                flush(ctx, a.id, &mut buf, &mut buf_offset).await?;
+                flush(ctx, file, a.id, &mut buf, &mut buf_offset).await?;
                 // Some servers cap how much one request returns. If we got
                 // everything promised, the rest is simply claimed again.
                 return if pos >= request_end {
@@ -545,7 +559,7 @@ async fn fetch(ctx: &Ctx, worker: WorkerId, a: Assignment) -> Result<()> {
         pos += keep;
         ctx.shared.downloaded.fetch_add(keep, Ordering::Relaxed);
         if done || buf.len() >= WRITE_BUFFER {
-            flush(ctx, a.id, &mut buf, &mut buf_offset).await?;
+            flush(ctx, file, a.id, &mut buf, &mut buf_offset).await?;
         }
         if done {
             if pos == request_end {
@@ -558,11 +572,17 @@ async fn fetch(ctx: &Ctx, worker: WorkerId, a: Assignment) -> Result<()> {
     }
 }
 
-async fn flush(ctx: &Ctx, segment: u64, buf: &mut Vec<u8>, offset: &mut u64) -> Result<()> {
+async fn flush(
+    ctx: &Ctx,
+    file: &Arc<File>,
+    segment: u64,
+    buf: &mut Vec<u8>,
+    offset: &mut u64,
+) -> Result<()> {
     if buf.is_empty() {
         return Ok(());
     }
-    let data = write_blocking(&ctx.file, mem::take(buf), *offset).await?;
+    let data = write_blocking(file, mem::take(buf), *offset).await?;
     *offset += data.len() as u64;
     ctx.shared.map.lock().unwrap().on_written(segment, *offset);
     *buf = data;

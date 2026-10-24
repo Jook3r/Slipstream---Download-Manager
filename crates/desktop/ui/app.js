@@ -831,6 +831,19 @@ async function init() {
   state.settings = settings;
   for (const item of items) if (!state.items.has(item.id)) state.items.set(item.id, item);
   renderNow();
+  showIntegrationProblem();
+}
+
+/** Browsers cannot hand links over without the bridge; say so right away. */
+async function showIntegrationProblem() {
+  const status = await invoke('integration_status');
+  const button = $('sb-integration');
+  if (!status.problem) return;
+  button.textContent = 'Browser integration is off';
+  button.title = status.problem;
+  button.hidden = false;
+  button.addEventListener('click', openIntegration);
+  toast(`Browser integration is off: ${status.problem}.`, true);
 }
 
 init();
