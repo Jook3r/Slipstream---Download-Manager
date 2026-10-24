@@ -492,6 +492,8 @@ function openOptions() {
   $('set-progress').checked = s.showProgress;
   $('set-complete').checked = s.showComplete;
   $('set-notify').checked = s.notifyOnComplete;
+  $('set-clipboard').checked = s.watchClipboard;
+  $('set-types').value = s.fileTypes;
   $('set-tray').checked = s.closeToTray;
   $('set-resume').checked = s.resumeOnStartup;
   $('set-dir').value = s.downloadDir;
@@ -585,6 +587,8 @@ async function saveOptions() {
     showProgress: $('set-progress').checked,
     showComplete: $('set-complete').checked,
     notifyOnComplete: $('set-notify').checked,
+    watchClipboard: $('set-clipboard').checked,
+    fileTypes: $('set-types').value.trim() || state.settings.fileTypes,
     closeToTray: $('set-tray').checked,
     resumeOnStartup: $('set-resume').checked,
     downloadDir: $('set-dir').value.trim() || state.settings.downloadDir,

@@ -42,6 +42,11 @@ const SPEED_WINDOW: Duration = Duration::from_secs(1);
 /// An HTML answer smaller than this, for a link to some other kind of file,
 /// is a web page served instead of the file.
 const MAX_STRAY_PAGE: u64 = 4 << 20;
+/// IDM's list of file types to catch, plus a few newer ones; the browser
+/// extension has the same.
+pub const DEFAULT_FILE_TYPES: &str = "3gp 7z aac ace aif apk appimage arj asf avi bin bz2 deb dmg epub exe flac flv gz gzip img iso jar \
+    lzh m4a m4v mkv mov mp3 mp4 mpa mpe mpeg mpg msi msu ogg ogv opus pdf pkg qt rar rm rmvb rpm \
+    sea sit sitx tar tgz tif tiff txz wav webm wma wmv xz z zip zst";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -133,6 +138,10 @@ pub struct Settings {
     pub ffmpeg_path: Option<PathBuf>,
     /// When the main download queue starts and stops by itself.
     pub schedule: Schedule,
+    /// Open Download File Info when a link to a file is copied.
+    pub watch_clipboard: bool,
+    /// Extensions of the files to catch from the clipboard.
+    pub file_types: String,
 }
 
 impl Default for Settings {
@@ -152,6 +161,10 @@ impl Default for Settings {
             show_complete: true,
             ffmpeg_path: None,
             schedule: Schedule::default(),
+            // macOS may ask the user each time an app reads the clipboard
+            // in the background, so there it is something to turn on.
+            watch_clipboard: !cfg!(target_os = "macos"),
+            file_types: DEFAULT_FILE_TYPES.to_string(),
         }
     }
 }
@@ -586,6 +599,14 @@ impl Manager {
             category,
             suggested_path,
         })
+    }
+
+    /// The link to catch from copied text: a single web link to a file of
+    /// a listed type, or to a video stream, that is not already in the list.
+    pub fn clipboard_link(&self, text: &str) -> Option<String> {
+        let st = self.lock();
+        let url = clipboard_link(text, &st.settings.file_types)?;
+        (!st.items.iter().any(|i| i.url == url)).then_some(url)
     }
 
     /// Lists the qualities a video stream offers.
@@ -1430,6 +1451,29 @@ impl SpeedMeter {
     }
 }
 
+/// `text` if it is just a web link to a file of one of `file_types`
+/// (extensions separated by spaces or commas), or to a video stream.
+fn clipboard_link(text: &str, file_types: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 4096 || text.contains(char::is_whitespace) {
+        return None;
+    }
+    let url = Url::parse(text).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    if stream_kind(text, None).is_some() {
+        return Some(text.to_string());
+    }
+    let name = file_name_from_url(text).to_ascii_lowercase();
+    let ext = name.rsplit_once('.')?.1;
+    file_types
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .map(|t| t.trim().trim_start_matches('.'))
+        .any(|t| !t.is_empty() && t.eq_ignore_ascii_case(ext))
+        .then(|| text.to_string())
+}
+
 /// A small HTML page where some other kind of file was expected: the link
 /// expired and the site sent its download page instead.
 fn page_instead_of_file(remote: &slipstream_engine::RemoteInfo, file_name: &str) -> bool {
@@ -1492,6 +1536,23 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catches_links_to_files_from_the_clipboard() {
+        let types = "zip iso, .mp4";
+        let yes = |t: &str| assert_eq!(clipboard_link(t, types).as_deref(), Some(t.trim()), "{t}");
+        let no = |t: &str| assert_eq!(clipboard_link(t, types), None, "{t}");
+        yes("https://mirror.example/files/archive.zip");
+        yes("  https://mirror.example/ubuntu.ISO?ts=123\n");
+        yes("http://cdn.example/movie.mp4");
+        yes("https://cdn.example/show/master.m3u8?token=a");
+        no("https://example.com/page.html");
+        no("https://example.com/");
+        no("ftp://example.com/file.zip");
+        no("see https://example.com/file.zip");
+        no("C:\\Downloads\\file.zip");
+        no("file.zip");
+    }
 
     #[test]
     fn speed_follows_changes_within_a_second() {

@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod commands;
 mod ipc;
 mod power;
@@ -184,6 +185,7 @@ fn main() {
                 eprintln!("browser integration is off: {e}");
             }
             app.manage(DataDir(data_dir));
+            clipboard::start(app.handle().clone());
             tray::build(app.handle())?;
             if !background {
                 windows::show_main(app.handle());
