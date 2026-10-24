@@ -151,12 +151,14 @@ fn parse_media(text: &str, base: &Url) -> Result<Media> {
     let mut range_end: Option<(Url, u64)> = None;
     let mut saw_segment = false;
     let mut first_uri = None;
+    let mut seconds = 0.0;
     for line in lines(text) {
         if let Some(n) = line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
             sequence = n.trim().parse().unwrap_or(0);
         } else if let Some(d) = line.strip_prefix("#EXTINF:") {
             let d = d.split(',').next().unwrap_or("").trim();
-            media.duration += d.parse::<f64>().unwrap_or(0.0);
+            seconds = d.parse::<f64>().unwrap_or(0.0);
+            media.duration += seconds;
         } else if line == "#EXT-X-ENDLIST" {
             media.ended = true;
         } else if let Some(kind) = line.strip_prefix("#EXT-X-PLAYLIST-TYPE:") {
@@ -192,7 +194,12 @@ fn parse_media(text: &str, base: &Url) -> Result<Media> {
                     iv,
                 })
             });
-            map = Some(PieceSpec { url, range, key });
+            map = Some(PieceSpec {
+                url,
+                range,
+                key,
+                seconds: 0.0,
+            });
             media.container = Container::Mp4;
         } else if !line.starts_with('#') {
             let url = join(base, line)?;
@@ -218,6 +225,7 @@ fn parse_media(text: &str, base: &Url) -> Result<Media> {
                 }),
                 url,
                 range: piece_range,
+                seconds: std::mem::take(&mut seconds),
             });
             sequence += 1;
             saw_segment = true;

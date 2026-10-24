@@ -43,6 +43,14 @@ h1 { margin: 0; font-size: 15px; }
 .detail { margin: 4px 0 0; font: 11px ui-monospace, Menlo, Consolas, monospace; color: var(--muted); word-break: break-word; }
 [hidden] { display: none !important; }
 .switch { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.switch.minor { font-weight: 400; margin-top: -6px; }
+.section-title { margin: 0 0 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+#video-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#video-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+#video-list .what { flex: 1; min-width: 0; }
+#video-list b, #video-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#video-list small { color: var(--muted); font-size: 11px; }
+#video-list button { flex: none; padding: 4px 10px; font-size: 12px; }
 input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
 details { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
 summary { cursor: pointer; color: var(--muted); }

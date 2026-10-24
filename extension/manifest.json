@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Slipstream Integration",
   "short_name": "Slipstream",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Hands your downloads to the Slipstream download manager, with resume and many connections at once.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApaSu4Rd9EC6/OMaNvD+g0N+whrjO1iH3wMcKQxGCKuu3BqljF27CODtCQHK05TTFJ+jw4licI9Wjw5P4yRs+GURD0UvsBNJtDVKWkBu4iCZp3k1W4EpB+3t7Pme+HcKXyCSfkGshScaBbc6KVsOO9aNZe0pp0pOLrKAEQvwzustcRZvOH5s9gdffKpuet/utOs88lUEq/ifGoqH/Kjy8HQ25efhnzakHtUJl4OT/T6sw5DxcbUnjer4LbbWwwPiDsU7Ti5aCW9EE5Q0z6XhQ0qjTIgjBf0n58b8pQrs0ZMHHyGDPA7Z1tOoxT1IKBoXVw+J9R1z2E33QD7qvx745dwIDAQAB",
   "icons": {
@@ -31,7 +31,8 @@
     "nativeMessaging",
     "contextMenus",
     "storage",
-    "scripting"
+    "scripting",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

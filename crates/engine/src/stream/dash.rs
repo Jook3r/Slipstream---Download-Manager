@@ -166,10 +166,11 @@ fn segments(
     bandwidth: Option<u64>,
     duration: Option<f64>,
 ) -> Result<(Vec<PieceSpec>, bool)> {
-    let piece = |url: Url, range: Option<(u64, u64)>| PieceSpec {
+    let piece = |url: Url, range: Option<(u64, u64)>, seconds: f64| PieceSpec {
         url,
         range,
         key: None,
+        seconds,
     };
     let join = |uri: &str| {
         base.join(uri.trim())
@@ -196,7 +197,7 @@ fn segments(
         let offset = number("presentationTimeOffset", 0);
         let mut pieces = Vec::new();
         if let Some(init) = attr("initialization") {
-            pieces.push(piece(join(&expand(init, id, bandwidth, 0, 0))?, None));
+            pieces.push(piece(join(&expand(init, id, bandwidth, 0, 0))?, None, 0.0));
         }
         let timeline = templates
             .iter()
@@ -224,12 +225,17 @@ fn segments(
                     return Err(Error::Playlist("too many segments".into()));
                 }
                 (0..count)
-                    .map(|i| (start_number + i, offset + i * step))
+                    .map(|i| (start_number + i, offset + i * step, step))
                     .collect()
             }
         };
-        for (n, t) in times {
-            pieces.push(piece(join(&expand(media, id, bandwidth, n, t))?, None));
+        for (n, t, ticks) in times {
+            let seconds = ticks as f64 / timescale as f64;
+            pieces.push(piece(
+                join(&expand(media, id, bandwidth, n, t))?,
+                None,
+                seconds,
+            ));
         }
         return Ok((pieces, false));
     }
@@ -238,11 +244,18 @@ fn segments(
         let mut pieces = Vec::new();
         if let Some(init) = list.child("Initialization") {
             let url = init.attr("sourceURL").map_or(Ok(base.clone()), join)?;
-            pieces.push(piece(url, init.attr("range").and_then(parse_range)));
+            pieces.push(piece(url, init.attr("range").and_then(parse_range), 0.0));
         }
+        let ticks = |name: &str| list.attr(name).and_then(|v| v.parse::<f64>().ok());
+        let seconds =
+            ticks("duration").map_or(0.0, |d| d / ticks("timescale").unwrap_or(1.0).max(1.0));
         for seg in list.children("SegmentURL") {
             let url = seg.attr("media").map_or(Ok(base.clone()), join)?;
-            pieces.push(piece(url, seg.attr("mediaRange").and_then(parse_range)));
+            pieces.push(piece(
+                url,
+                seg.attr("mediaRange").and_then(parse_range),
+                seconds,
+            ));
         }
         if pieces.is_empty() {
             return Err(Error::Playlist("an empty segment list".into()));
@@ -251,11 +264,18 @@ fn segments(
     }
 
     // SegmentBase, or nothing: the representation is one complete file.
-    Ok((vec![piece(base.clone(), None)], true))
+    Ok((
+        vec![piece(base.clone(), None, duration.unwrap_or(0.0))],
+        true,
+    ))
 }
 
-/// (number, time) of each segment in a `SegmentTimeline`.
-fn timeline_times(timeline: &Node, start_number: u64, end: Option<u64>) -> Result<Vec<(u64, u64)>> {
+/// (number, time, duration) of each segment in a `SegmentTimeline`.
+fn timeline_times(
+    timeline: &Node,
+    start_number: u64,
+    end: Option<u64>,
+) -> Result<Vec<(u64, u64, u64)>> {
     let entries: Vec<&Node> = timeline.children("S").collect();
     let mut out = Vec::new();
     let (mut number, mut t) = (start_number, 0u64);
@@ -287,7 +307,7 @@ fn timeline_times(timeline: &Node, start_number: u64, end: Option<u64>) -> Resul
             return Err(Error::Playlist("too many segments".into()));
         }
         for _ in 0..=repeat {
-            out.push((number, t));
+            out.push((number, t, d));
             number += 1;
             t += d;
         }

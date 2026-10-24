@@ -53,27 +53,37 @@ pub(crate) async fn finish(
     cancel: &CancellationToken,
 ) -> Result<PathBuf> {
     match (ffmpeg, tracks) {
+        (Some(ffmpeg), [(track, container)]) => {
+            match join(ffmpeg, tracks, work, path, cancel).await {
+                Ok(()) => Ok(path.to_path_buf()),
+                // The video is fine as it came; ffmpeg only tidies it up.
+                Err(Error::Ffmpeg(_)) => keep(track, *container, path),
+                Err(e) => Err(e),
+            }
+        }
         (Some(ffmpeg), _) => {
             join(ffmpeg, tracks, work, path, cancel).await?;
             Ok(path.to_path_buf())
         }
-        (None, [(track, container)]) => {
-            // Keep it as it came, under an extension that fits.
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let out = if fits(*container, &ext) {
-                path.to_path_buf()
-            } else {
-                free(&path.with_extension(container.extension()))
-            };
-            std::fs::rename(track, &out)?;
-            Ok(out)
-        }
+        (None, [(track, container)]) => keep(track, *container, path),
         (None, _) => Err(Error::FfmpegMissing),
     }
+}
+
+/// Keeps a single track as it came, under an extension that fits it.
+fn keep(track: &Path, container: Container, path: &Path) -> Result<PathBuf> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let out = if fits(container, &ext) {
+        path.to_path_buf()
+    } else {
+        free(&path.with_extension(container.extension()))
+    };
+    std::fs::rename(track, &out)?;
+    Ok(out)
 }
 
 fn fits(container: Container, ext: &str) -> bool {

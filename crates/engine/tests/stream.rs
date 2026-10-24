@@ -546,3 +546,59 @@ fn duration(ffprobe: &Path, file: &Path) -> f64 {
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
 }
+
+#[tokio::test]
+async fn estimates_the_size_from_the_length() {
+    // 40 seconds at a steady 10 kB per second, in pieces of 2 and 6 seconds,
+    // where an average per piece would be badly off.
+    let (server, _) = start(Vec::new()).await;
+    let mut text = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n".to_string();
+    for i in 0..10 {
+        let seconds = if i % 2 == 0 { 2 } else { 6 };
+        server.add_file(&format!("e/{i}.ts"), data(seconds * 10_000, i as u64), None);
+        text.push_str(&format!("#EXTINF:{seconds}.0,\n{i}.ts\n"));
+    }
+    server.add_file(
+        "e/index.m3u8",
+        (text + "#EXT-X-ENDLIST\n").into_bytes(),
+        M3U8,
+    );
+    server.add_file(
+        "e/master.m3u8",
+        b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=88000\nindex.m3u8\n".to_vec(),
+        M3U8,
+    );
+    server.per_conn_rate.store(60_000, Ordering::SeqCst);
+    let client = build_client(&ClientOptions::default()).unwrap();
+    let info = inspect_stream(&client, &server.url("e/master.m3u8"), &[])
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let req = request(
+        server.url("e/master.m3u8"),
+        info.variants[0].key.clone(),
+        dir.path().join("e.ts"),
+        None,
+    );
+    let options = Options {
+        connections: 1,
+        ..Options::default()
+    };
+    let job = StreamDownload::prepare(client, req, options).await.unwrap();
+    let progress = job.progress();
+    assert_eq!(
+        progress.snapshot().total,
+        Some(88_000 * 40 / 8),
+        "first, from the bit rate"
+    );
+    let run = tokio::spawn(job.run(CancellationToken::new()));
+    loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let snap = progress.snapshot();
+        if snap.stream.unwrap().done >= 1 {
+            assert_eq!(snap.total, Some(400_000), "then from what arrived");
+            break;
+        }
+    }
+    run.await.unwrap().unwrap();
+}

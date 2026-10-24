@@ -134,6 +134,8 @@ pub(crate) struct PieceSpec {
     /// Offset and length.
     pub range: Option<(u64, u64)>,
     pub key: Option<KeySpec>,
+    /// How many seconds of video it holds; 0 for setup data or if unknown.
+    pub seconds: f64,
 }
 
 /// HLS AES-128: the segment is encrypted with the key at `url`.

@@ -36,10 +36,47 @@ async function checkStatus() {
   if (problem && !answer?.appRunning) showStatus(problem, 'warn');
 }
 
+/** Videos the current page has played, each with a Download button. */
+async function showVideos() {
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
+  const answer = await api.runtime.sendMessage({ type: 'media-list', tabId: tab.id }).catch(() => null);
+  const items = answer?.items ?? [];
+  $('videos').hidden = !items.length;
+  $('video-list').replaceChildren(
+    ...items.map((entry) => {
+      const li = document.createElement('li');
+      const what = document.createElement('div');
+      what.className = 'what';
+      const title = document.createElement('b');
+      title.textContent = entry.title;
+      const detail = document.createElement('small');
+      detail.textContent = entry.detail;
+      detail.title = entry.url;
+      what.append(title, detail);
+      const button = document.createElement('button');
+      button.textContent = 'Download';
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        button.textContent = 'Sending…';
+        const result = await api.runtime.sendMessage({ type: 'download-media', tabId: tab.id, url: entry.url });
+        if (result?.ok) window.close();
+        button.disabled = false;
+        button.textContent = 'Download';
+        checkStatus();
+      });
+      li.append(what, button);
+      return li;
+    }),
+  );
+}
+
 async function init() {
   // The background script owns the defaults.
   const current = await api.runtime.sendMessage({ type: 'settings' });
   $('enabled').checked = current.enabled;
+  $('video-button').checked = current.videoButton;
+  $('video-button').addEventListener('change', (e) => api.storage.local.set({ videoButton: e.target.checked }));
   $('extensions').value = current.extensions;
   $('min-size').value = current.minSizeMb;
 
@@ -51,6 +88,7 @@ async function init() {
     window.close();
   });
   checkStatus();
+  showVideos();
 }
 
 init();

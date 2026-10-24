@@ -124,6 +124,36 @@ impl StreamDownload {
             .map(|p| p.range.map(|r| r.1))
             .sum::<Option<u64>>();
         let done_count = restored.done.iter().filter(|d| **d).count() as u64;
+        let mut first = 0;
+        let per_track: Vec<TrackDone> = tracks
+            .iter()
+            .zip(&restored.track_bytes)
+            .map(|(track, &bytes)| {
+                let done = &restored.done[first..first + track.pieces.len()];
+                first += track.pieces.len();
+                TrackDone {
+                    bytes,
+                    seconds: track
+                        .pieces
+                        .iter()
+                        .zip(done)
+                        .filter(|(_, d)| **d)
+                        .map(|(p, _)| p.seconds)
+                        .sum(),
+                    total_seconds: track.pieces.iter().map(|p| p.seconds).sum(),
+                }
+            })
+            .collect();
+        // Before any piece arrives: the quality's bit rate times its length.
+        let length = per_track
+            .iter()
+            .map(|t| t.total_seconds)
+            .fold(0.0, f64::max);
+        let first_guess = request
+            .variant
+            .bandwidth
+            .filter(|_| length > 0.0)
+            .map(|b| (b as f64 * length / 8.0) as u64);
         let info = StreamDownloadInfo {
             path: request.path.clone(),
             pieces,
@@ -133,6 +163,8 @@ impl StreamDownload {
         let shared = Arc::new(Shared {
             pieces,
             exact_total,
+            first_guess,
+            per_track: Mutex::new(per_track),
             done: Mutex::new(restored.done),
             done_count: AtomicU64::new(done_count),
             done_bytes: AtomicU64::new(restored.bytes),
@@ -171,20 +203,26 @@ impl StreamDownload {
             fs::create_dir_all(dir)?;
         }
         let mut offsets = Vec::new();
-        let mut pending = VecDeque::new();
+        let mut pending = Vec::new();
         {
             let done = self.shared.done.lock().unwrap();
             let mut first = 0u64;
             for (t, track) in self.tracks.iter().enumerate() {
                 offsets.push(first);
-                for i in 0..track.pieces.len() {
+                let mut start = 0.0;
+                for (i, piece) in track.pieces.iter().enumerate() {
                     if !done[(first + i as u64) as usize] {
-                        pending.push_back((t, i));
+                        pending.push((start, t, i));
                     }
+                    start += piece.seconds;
                 }
                 first += track.pieces.len() as u64;
             }
         }
+        // Picture and sound side by side, in playing order.
+        pending.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let pending: VecDeque<(usize, usize)> =
+            pending.into_iter().map(|(_, t, i)| (t, i)).collect();
 
         if !pending.is_empty() {
             let files = (0..self.tracks.len())
@@ -272,6 +310,7 @@ async fn split(client: &Client, headers: &[(String, String)], track: &mut TrackS
                     url: url.clone(),
                     range: Some((offset, CHUNK.min(total - offset))),
                     key: None,
+                    seconds: 0.0,
                 }
             })
             .collect();
@@ -322,6 +361,7 @@ struct Restored {
     /// Per piece, all tracks in a row.
     done: Vec<bool>,
     bytes: u64,
+    track_bytes: Vec<u64>,
 }
 
 /// Picks up an earlier run's pieces, or starts afresh if they belong to
@@ -347,7 +387,7 @@ fn restore(work: &Path, signature: &str, counts: &[usize]) -> io::Result<Restore
     };
     fs::create_dir_all(work)?;
 
-    let mut bytes = 0;
+    let mut track_bytes = vec![0; counts.len()];
     for (t, c) in committed.iter_mut().enumerate() {
         let file = OpenOptions::new()
             .write(true)
@@ -362,7 +402,7 @@ fn restore(work: &Path, signature: &str, counts: &[usize]) -> io::Result<Restore
         // Anything past the last commit was a piece being appended when we
         // stopped; it is still on disk and gets appended again.
         file.set_len(c.bytes)?;
-        bytes += c.bytes;
+        track_bytes[t] = c.bytes;
     }
 
     let mut on_disk = HashSet::new();
@@ -394,7 +434,7 @@ fn restore(work: &Path, signature: &str, counts: &[usize]) -> io::Result<Restore
                 }
                 done.push(true);
             } else if let Some(meta) = seg.and_then(|p| fs::metadata(p).ok()) {
-                bytes += meta.len();
+                track_bytes[t] += meta.len();
                 done.push(true);
             } else {
                 done.push(false);
@@ -411,7 +451,8 @@ fn restore(work: &Path, signature: &str, counts: &[usize]) -> io::Result<Restore
     Ok(Restored {
         committed,
         done,
-        bytes,
+        bytes: track_bytes.iter().sum(),
+        track_bytes,
     })
 }
 
@@ -419,11 +460,36 @@ fn restore(work: &Path, signature: &str, counts: &[usize]) -> io::Result<Restore
 struct Shared {
     pieces: u64,
     exact_total: Option<u64>,
+    first_guess: Option<u64>,
+    per_track: Mutex<Vec<TrackDone>>,
     done: Mutex<Vec<bool>>,
     done_count: AtomicU64,
     done_bytes: AtomicU64,
     workers: Mutex<Vec<Option<PieceWork>>>,
     joining: AtomicBool,
+}
+
+/// What has arrived of one track, for estimating its size.
+#[derive(Debug, Clone, Copy)]
+struct TrackDone {
+    bytes: u64,
+    seconds: f64,
+    total_seconds: f64,
+}
+
+impl Shared {
+    /// Each track's bytes per second of video so far, times its length.
+    /// Pieces differ in length, so this beats an average per piece.
+    fn estimate(&self) -> Option<u64> {
+        self.per_track
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|t| (t.seconds > 0.0).then(|| t.bytes as f64 / t.seconds * t.total_seconds))
+            .sum::<Option<f64>>()
+            .map(|total| total as u64)
+            .or(self.first_guess)
+    }
 }
 
 impl Watch for Shared {
@@ -439,10 +505,14 @@ impl Watch for Shared {
         let done = self.done_count.load(Ordering::Relaxed);
         let done_bytes = self.done_bytes.load(Ordering::Relaxed);
         let downloaded = done_bytes + workers.iter().map(|w| w.received).sum::<u64>();
-        // Until every size is known, assume the rest are like those so far.
+        // Until every size is known, estimate: from the video's length, or
+        // failing that, assuming the pieces to come are like those so far.
         let total = self.exact_total.or_else(|| {
-            (done >= 3.min(self.pieces) && done > 0)
-                .then(|| ((done_bytes as f64 / done as f64) * self.pieces as f64) as u64)
+            self.estimate()
+                .or_else(|| {
+                    (done >= 3.min(self.pieces) && done > 0)
+                        .then(|| ((done_bytes as f64 / done as f64) * self.pieces as f64) as u64)
+                })
                 .map(|t| t.max(downloaded))
         });
         ProgressSnapshot {
@@ -522,8 +592,13 @@ impl Ctx {
         }
     }
 
-    fn mark_done(&self, piece: u64, bytes: u64) {
+    fn mark_done(&self, track: usize, index: usize, bytes: u64) {
+        let piece = self.offsets[track] + index as u64;
         self.shared.done.lock().unwrap()[piece as usize] = true;
+        let mut per_track = self.shared.per_track.lock().unwrap();
+        per_track[track].bytes += bytes;
+        per_track[track].seconds += self.tracks[track].pieces[index].seconds;
+        drop(per_track);
         self.shared.done_count.fetch_add(1, Ordering::Relaxed);
         self.shared.done_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
@@ -618,7 +693,7 @@ async fn worker(ctx: Arc<Ctx>, slot: usize) {
             Err(Error::Cancelled) => return,
             Err(e) => return ctx.fail(e),
         };
-        ctx.mark_done(piece, size);
+        ctx.mark_done(track, index, size);
         let commit = tokio::task::spawn_blocking({
             let ctx = ctx.clone();
             move || ctx.commit(track)
