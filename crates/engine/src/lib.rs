@@ -21,15 +21,22 @@ mod state;
 
 use std::time::Duration;
 
-use reqwest::{Client, RequestBuilder, StatusCode, header};
+use reqwest::{RequestBuilder, StatusCode, header};
 
 pub use download::{
     Download, DownloadInfo, Options, Outcome, Output, Progress, ProgressSnapshot, Request,
 };
 pub use limiter::RateLimiter;
-pub use probe::RemoteInfo;
+pub use probe::{RemoteInfo, probe};
+pub use reqwest::{Client, Url};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// The temporary files a download keeps next to `path` until it finishes:
+/// the data (`.part`) and the resume state (`.slipstream`).
+pub fn partial_files(path: &std::path::Path) -> [std::path::PathBuf; 2] {
+    [state::part_path(path), state::state_path(path)]
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

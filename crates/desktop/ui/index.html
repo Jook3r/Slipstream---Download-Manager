@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slipstream</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="toolbar">
+    <button id="btn-add" class="primary" data-icon="plus" title="Add links (Ctrl+N)">Add</button>
+    <span class="sep"></span>
+    <button id="btn-resume" data-icon="play" title="Resume selected">Resume</button>
+    <button id="btn-pause" data-icon="pause" title="Pause selected">Pause</button>
+    <button id="btn-remove" data-icon="trash" title="Remove selected (Delete)">Remove</button>
+    <span class="sep"></span>
+    <button id="btn-resume-all" data-icon="playAll" title="Resume every download">Resume all</button>
+    <button id="btn-pause-all" data-icon="pauseAll" title="Pause every download">Pause all</button>
+    <span class="spacer"></span>
+    <label class="search" data-icon="search">
+      <input id="search" type="search" placeholder="Search downloads" aria-label="Search downloads">
+    </label>
+    <button id="btn-folder" class="icon-only" data-icon="folder" title="Open download folder" aria-label="Open download folder"></button>
+    <button id="btn-settings" class="icon-only" data-icon="settings" title="Settings" aria-label="Settings"></button>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" id="sidebar" aria-label="Filters"></nav>
+
+    <main class="content">
+      <div class="table-wrap" id="table-wrap">
+        <table class="downloads">
+          <colgroup>
+            <col class="c-name"><col class="c-size"><col class="c-status"><col class="c-speed"><col class="c-eta"><col class="c-added">
+          </colgroup>
+          <thead>
+            <tr>
+              <th data-sort="name">Name</th>
+              <th data-sort="size" class="num">Size</th>
+              <th data-sort="status">Status</th>
+              <th class="num">Speed</th>
+              <th class="num">Time left</th>
+              <th data-sort="added" class="num">Added</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div class="empty" id="empty" hidden>
+          <div class="empty-icon" data-icon="download"></div>
+          <p class="empty-title" id="empty-title">No downloads yet</p>
+          <p class="empty-hint" id="empty-hint">Click <b>Add</b>, paste a link with <kbd>Ctrl</kbd>+<kbd>V</kbd>, or drop links here.</p>
+        </div>
+      </div>
+
+      <section class="details" id="details" hidden aria-label="Download details">
+        <div class="d-head">
+          <span class="d-icon" id="d-icon"></span>
+          <span class="d-name" id="d-name"></span>
+          <span class="pill" id="d-status"></span>
+        </div>
+        <canvas class="segmap" id="d-map" height="14" aria-label="Which parts of the file have downloaded"></canvas>
+        <dl class="d-grid">
+          <dt>Link</dt><dd class="mono" id="d-url"></dd>
+          <dt>Saved to</dt><dd class="mono" id="d-path"></dd>
+          <dt>Progress</dt><dd id="d-progress"></dd>
+          <dt>Connections</dt><dd id="d-conns"></dd>
+          <dt>Resume</dt><dd id="d-resume"></dd>
+          <dt class="d-error" hidden>Error</dt><dd class="d-error error" id="d-error" hidden></dd>
+        </dl>
+      </section>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span id="sb-speed" class="sb-speed"></span>
+    <span id="sb-counts"></span>
+    <span class="spacer"></span>
+    <button id="sb-limit" class="link" title="Change in Settings"></button>
+  </footer>
+
+  <dialog id="dlg-add" aria-labelledby="add-title">
+    <form method="dialog">
+      <h2 id="add-title">Add downloads</h2>
+      <label for="add-urls">Links, one per line</label>
+      <textarea id="add-urls" rows="6" spellcheck="false" placeholder="https://example.com/file.zip"></textarea>
+      <p class="hint" id="add-hint">Files go to your download folder, sorted by type.</p>
+      <div class="actions">
+        <button value="cancel" formnovalidate>Cancel</button>
+        <span class="spacer"></span>
+        <button value="later" id="add-later">Download later</button>
+        <button value="start" class="primary" id="add-start">Download</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-remove" aria-labelledby="remove-title">
+    <form method="dialog">
+      <h2 id="remove-title">Remove downloads</h2>
+      <p id="remove-text"></p>
+      <label class="check"><input type="checkbox" id="remove-files"> Also delete the files from disk</label>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button value="cancel">Cancel</button>
+        <button value="remove" class="danger">Remove</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title">Settings</h2>
+      <fieldset>
+        <legend>Saving</legend>
+        <label for="set-dir">Download folder</label>
+        <div class="row">
+          <input id="set-dir" type="text" spellcheck="false">
+          <button type="button" id="set-browse">Browse…</button>
+        </div>
+        <label class="check"><input type="checkbox" id="set-categories"> Sort into Video, Music, Documents… folders</label>
+      </fieldset>
+      <fieldset>
+        <legend>Speed</legend>
+        <label for="set-conns">Connections per download: <output id="set-conns-out"></output></label>
+        <input id="set-conns" type="range" min="1" max="32" step="1">
+        <label for="set-active">Downloads at the same time</label>
+        <input id="set-active" type="number" min="1" max="10" step="1">
+        <label class="check"><input type="checkbox" id="set-limit-on"> Limit total speed to</label>
+        <div class="row">
+          <input id="set-limit" type="number" min="1" step="any" aria-label="Speed limit">
+          <select id="set-limit-unit" aria-label="Speed limit unit">
+            <option value="1024">KB/s</option>
+            <option value="1048576">MB/s</option>
+          </select>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>App</legend>
+        <label class="check"><input type="checkbox" id="set-resume"> Resume unfinished downloads when Slipstream starts</label>
+        <label class="check"><input type="checkbox" id="set-tray"> Keep running in the tray when the window is closed</label>
+        <label class="check"><input type="checkbox" id="set-notify"> Notify me when a download finishes</label>
+      </fieldset>
+      <div class="actions">
+        <span class="spacer"></span>
+        <button value="cancel">Cancel</button>
+        <button value="save" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="drop" id="drop" hidden><div>Drop links to download</div></div>
+</body>
+</html>

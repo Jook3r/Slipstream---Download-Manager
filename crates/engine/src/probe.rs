@@ -114,16 +114,27 @@ fn file_name_from(h: &HeaderMap, url: &str) -> String {
         .get(header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
         .and_then(disposition_file_name);
-    let from_url = || {
-        let path = url.split(['?', '#']).next().unwrap_or("");
-        let path = path.split_once("://").map_or(path, |(_, rest)| {
-            rest.split_once('/').map_or("", |(_, p)| p)
-        });
-        path.rsplit('/')
-            .find(|s| !s.is_empty())
-            .map(|s| percent_decode_str(s).decode_utf8_lossy().into_owned())
-    };
-    sanitize_file_name(&from_header.or_else(from_url).unwrap_or_default())
+    sanitize_file_name(
+        &from_header
+            .or_else(|| url_file_name(url))
+            .unwrap_or_default(),
+    )
+}
+
+/// A best guess at the file name from the link alone, before contacting the
+/// server (which may suggest a different one).
+pub fn file_name_from_url(url: &str) -> String {
+    sanitize_file_name(&url_file_name(url).unwrap_or_default())
+}
+
+fn url_file_name(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once("://").map_or(path, |(_, rest)| {
+        rest.split_once('/').map_or("", |(_, p)| p)
+    });
+    path.rsplit('/')
+        .find(|s| !s.is_empty())
+        .map(|s| percent_decode_str(s).decode_utf8_lossy().into_owned())
 }
 
 /// Reads the file name from a `Content-Disposition` header, preferring the

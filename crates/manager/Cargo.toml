@@ -1,0 +1,17 @@
+[package]
+name = "slipstream-manager"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+slipstream-engine = { path = "../engine" }
+tokio = { version = "1.54.1", features = ["rt", "sync", "time", "macros"] }
+tokio-util = "0.7.20"
+
+[dev-dependencies]
+slipstream-engine = { path = "../engine" }
+slipstream-test-server = { path = "../test-server" }
+tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["full"] }

@@ -1,165 +1,15 @@
 //! End-to-end tests against a local server that can misbehave on purpose.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use axum::Router;
-use axum::body::{Body, Bytes};
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
-use futures_util::stream;
 use slipstream_engine::{
     ClientOptions, Download, Error, Options, Outcome, Output, RateLimiter, Request, build_client,
 };
 use tokio_util::sync::CancellationToken;
 
-const MB: usize = 1 << 20;
-
-#[derive(Default)]
-struct Server {
-    data: RwLock<(Arc<Vec<u8>>, String)>,
-    no_ranges: AtomicBool,
-    no_length: AtomicBool,
-    /// Per-connection speed cap in bytes/s, to make parallelism matter.
-    per_conn_rate: AtomicU64,
-    /// Break this many data responses after `drop_after` bytes.
-    drops_left: AtomicUsize,
-    drop_after: AtomicUsize,
-    requests: AtomicUsize,
-    range_requests: AtomicUsize,
-    bytes_sent: AtomicU64,
-    in_flight: AtomicUsize,
-    max_in_flight: AtomicUsize,
-}
-
-impl Server {
-    fn set_data(&self, data: Vec<u8>, etag: &str) {
-        *self.data.write().unwrap() = (Arc::new(data), format!("\"{etag}\""));
-    }
-}
-
-/// Decrements `counter` unless it is already zero; true if it did.
-fn take_one(counter: &AtomicUsize) -> bool {
-    let mut n = counter.load(Ordering::SeqCst);
-    while n > 0 {
-        match counter.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
-            Ok(_) => return true,
-            Err(current) => n = current,
-        }
-    }
-    false
-}
-
-struct InFlight(Arc<Server>);
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
-async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
-    let (data, etag) = s.data.read().unwrap().clone();
-    s.requests.fetch_add(1, Ordering::SeqCst);
-    let len = data.len();
-
-    let if_range_ok = headers
-        .get(header::IF_RANGE)
-        .is_none_or(|v| v.to_str().unwrap() == etag);
-    let range = headers
-        .get(header::RANGE)
-        .filter(|_| !s.no_ranges.load(Ordering::SeqCst) && if_range_ok)
-        .and_then(|v| {
-            v.to_str()
-                .ok()?
-                .strip_prefix("bytes=")?
-                .split_once('-')
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-        })
-        .map(|(a, b)| (a.parse::<usize>().unwrap(), b.parse::<usize>().ok()));
-
-    let mut resp = Response::builder().header(header::ETAG, &etag);
-    let (from, to) = match range {
-        Some((a, _)) if a >= len => {
-            return resp
-                .status(StatusCode::RANGE_NOT_SATISFIABLE)
-                .header(header::CONTENT_RANGE, format!("bytes */{len}"))
-                .body(Body::empty())
-                .unwrap();
-        }
-        Some((a, b)) => {
-            let end = b.unwrap_or(len - 1).min(len - 1);
-            s.range_requests.fetch_add(1, Ordering::SeqCst);
-            resp = resp
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header(header::CONTENT_RANGE, format!("bytes {a}-{end}/{len}"));
-            (a, end + 1)
-        }
-        None => (0, len),
-    };
-    if !s.no_length.load(Ordering::SeqCst) {
-        resp = resp.header(header::CONTENT_LENGTH, to - from);
-    }
-
-    // Only real data requests misbehave, not the one-byte probe.
-    let drop_at = (to - from > 1 && take_one(&s.drops_left))
-        .then(|| from + s.drop_after.load(Ordering::SeqCst));
-    let rate = s.per_conn_rate.load(Ordering::SeqCst);
-    let current = s.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-    s.max_in_flight.fetch_max(current, Ordering::SeqCst);
-    let guard = InFlight(s.clone());
-
-    let body = stream::unfold((from, guard), move |(pos, guard)| {
-        let data = data.clone();
-        async move {
-            if pos >= to {
-                return None;
-            }
-            if drop_at.is_some_and(|d| pos >= d) {
-                return Some((Err(std::io::Error::other("simulated drop")), (to, guard)));
-            }
-            let end = (pos + 16 * 1024).min(to);
-            if rate > 0 {
-                tokio::time::sleep(Duration::from_secs_f64((end - pos) as f64 / rate as f64)).await;
-            }
-            guard
-                .0
-                .bytes_sent
-                .fetch_add((end - pos) as u64, Ordering::SeqCst);
-            Some((Ok(Bytes::copy_from_slice(&data[pos..end])), (end, guard)))
-        }
-    });
-    resp.body(Body::from_stream(body)).unwrap()
-}
-
-async fn start(data: Vec<u8>) -> (Arc<Server>, String) {
-    let server = Arc::new(Server::default());
-    server.set_data(data, "v1");
-    let app = Router::new()
-        .route(
-            "/missing",
-            axum::routing::get(|| async { StatusCode::NOT_FOUND.into_response() }),
-        )
-        .fallback(serve)
-        .with_state(server.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (server, format!("http://{addr}/files/test.bin"))
-}
-
-fn data(len: usize, seed: u64) -> Vec<u8> {
-    let mut x = seed | 1;
-    (0..len)
-        .map(|_| {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x as u8
-        })
-        .collect()
-}
+use slipstream_test_server::{MB, data, start};
 
 fn opts(connections: usize) -> Options {
     Options {
@@ -457,4 +307,31 @@ async fn reports_missing_file() {
     let err = download(&url, dir.path(), opts(4)).await.unwrap_err();
 
     assert!(matches!(err, Error::Status(s) if s == 404), "{err:?}");
+}
+
+#[tokio::test]
+async fn same_name_downloads_started_together_get_separate_files() {
+    let content = data(1000, 14);
+    let (server, _) = start(content.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    // Both pick a name before either has written anything.
+    let a = prepare(&server.url("a/test.bin"), dir.path(), opts(2))
+        .await
+        .unwrap();
+    let b = prepare(&server.url("b/test.bin"), dir.path(), opts(2))
+        .await
+        .unwrap();
+    assert_ne!(a.info().path, b.info().path);
+    let (ra, rb) = tokio::join!(
+        a.run(CancellationToken::new()),
+        b.run(CancellationToken::new())
+    );
+
+    assert_eq!(ra.unwrap(), Outcome::Completed(dir.path().join("test.bin")));
+    assert_eq!(
+        rb.unwrap(),
+        Outcome::Completed(dir.path().join("test (1).bin"))
+    );
+    assert!(read(dir.path(), "test (1).bin") == content);
 }

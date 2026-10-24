@@ -130,6 +130,17 @@ impl Download {
     /// Probes the server, picks the destination and loads any resume state.
     pub async fn prepare(client: Client, request: Request, opts: Options) -> Result<Self> {
         let remote = probe(&client, &request.url, &request.headers).await?;
+        Self::prepare_probed(client, request, opts, remote).await
+    }
+
+    /// Like [`Download::prepare`], for callers that already probed the link
+    /// (for example to choose a folder from the file name).
+    pub async fn prepare_probed(
+        client: Client,
+        request: Request,
+        opts: Options,
+        remote: RemoteInfo,
+    ) -> Result<Self> {
         let resumable = remote.ranges && remote.total.is_some();
 
         let (path, saved) = match &request.output {
@@ -563,18 +574,33 @@ async fn write_blocking(file: &Arc<File>, data: Vec<u8>, offset: u64) -> Result<
 }
 
 /// Picks `name`, `name (1)`, ... in a folder, reusing one whose partial
-/// download came from the same link so it resumes.
+/// download came from the same link so it resumes. A new name is reserved by
+/// creating its `.part` file at once, so two downloads of the same file
+/// started together never pick the same name.
 fn pick_path(base: &Path, url: &str, remote: &RemoteInfo) -> (PathBuf, Option<State>) {
     for n in 0.. {
         let candidate = numbered(base, n);
         match State::load(&state_path(&candidate)) {
             Some(state) if state.same_source(url, remote) => return (candidate, Some(state)),
             Some(_) => continue,
-            None if !candidate.exists() => return (candidate, None),
+            None if !candidate.exists() && reserve(&part_path(&candidate)) => {
+                return (candidate, None);
+            }
             None => continue,
         }
     }
     unreachable!()
+}
+
+fn reserve(part: &Path) -> bool {
+    if let Some(dir) = part.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let _ = fs::create_dir_all(dir);
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(part)
+        .is_ok()
 }
 
 fn numbered(base: &Path, n: u32) -> PathBuf {

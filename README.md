@@ -1,10 +1,35 @@
 # Slipstream
 
 A multi-connection download manager for Windows, macOS and Linux, modelled on
-Internet Download Manager's engine. This is phase 1: the download engine and a
-command-line tool. A desktop app and browser extension come next.
+Internet Download Manager. It has a desktop app and a command-line tool that
+share the same download engine.
 
-## Usage
+![Slipstream's main window](docs/screenshot.png)
+
+## Desktop app
+
+- **Fast downloads**: up to 32 connections per file, with IDM-style dynamic
+  segmentation (see below). The details panel shows a live map of which parts
+  of the file have arrived.
+- **Pause and resume**, even after closing the app or a crash. Unfinished
+  downloads continue when Slipstream starts (can be turned off).
+- **Queue**: a set number of downloads run at once (3 by default); the rest
+  wait their turn. "Download later" adds links without starting them.
+- **Categories**: files are sorted into Video, Music, Documents, Compressed,
+  Programs and Images folders inside your download folder, and the sidebar
+  filters by category or status.
+- **Adding links**: the Add button, pasting with Ctrl+V (⌘V) anywhere in the
+  window, or dragging links in from a browser.
+- **Tray icon**: closing the window keeps downloads going in the tray (can be
+  turned off). The tray menu can pause or resume everything.
+- **Notifications** when a download finishes, and a speed limit shared by all
+  downloads.
+- Light and dark themes follow the system.
+
+Keyboard: Ctrl+N add, Ctrl+F search, Delete remove, Space pause/resume,
+Enter open a finished file, arrows to move, Ctrl+A select all.
+
+## Command line
 
 ```sh
 slipstream https://example.com/big-file.zip                 # save in the current folder
@@ -28,8 +53,8 @@ follows IDM's published description of its engine.
 
 **Resume.** Each connection writes straight into `name.part` at its own
 offset. Every 5 seconds, and on pause, the data is flushed to disk and the
-piece positions are saved to `name.slipstream`. After a crash or power cut, the
-download continues from the last save. If the server's file has changed
+piece positions are saved to `name.slipstream`. After a crash or power cut,
+the download continues from the last save. If the server's file has changed
 (different size, ETag or Last-Modified), the download starts over instead of
 mixing two versions. Every request also carries `If-Range`, so a change in the
 middle of a download is caught too.
@@ -46,29 +71,39 @@ TCP connection, which defeats the point of using several.
 
 | Path | What |
 |---|---|
-| `crates/engine` | The library: reusable by the future desktop app |
-| `crates/engine/src/segments.rs` | Dynamic segmentation (pure logic, unit tested) |
-| `crates/engine/src/download.rs` | Connections, resume, retries, file handling |
-| `crates/engine/src/probe.rs` | Size/range detection, file names from headers or URLs |
-| `crates/engine/tests/download.rs` | End-to-end tests against a local misbehaving server |
+| `crates/engine` | Download engine: segmentation, resume, retries, speed limit |
+| `crates/manager` | Download list, queue, categories, settings, saving the list |
+| `crates/desktop` | Tauri desktop app; its page is plain HTML/CSS/JS in `ui/` |
 | `crates/cli` | The `slipstream` command |
+| `crates/test-server` | A deliberately misbehaving HTTP server used by the tests |
+
+The app keeps its list and settings in the system's app-data folder
+(`io.github.jook3r.slipstream`).
 
 ## Building
 
-Install Rust from <https://rustup.rs>, then:
+Install Rust from <https://rustup.rs>. On Linux, the desktop app also needs
+WebKitGTK and a tray library:
 
 ```sh
-cargo build --release      # binary in target/release/slipstream (slipstream.exe on Windows)
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+```
+
+Then:
+
+```sh
+cargo run -p slipstream-desktop             # the desktop app
+cargo build --release --workspace           # both programs, in target/release/
 cargo test --workspace
 ```
 
 The GitHub Actions workflow tests and builds on Windows, macOS and Linux and
-uploads the binaries as artifacts.
+uploads both programs as artifacts.
 
 ## Roadmap
 
-1. ~~Engine: dynamic segmentation, resume, retries, speed limit~~ (this)
-2. Desktop app (Tauri): download list, queue, categories, tray icon
+1. ~~Engine: dynamic segmentation, resume, retries, speed limit~~
+2. ~~Desktop app: download list, queue, categories, tray icon~~
 3. Browser extension (Chrome/Edge/Firefox, Manifest V3) + native messaging
 4. Video stream detection (HLS/DASH), ffmpeg muxing, scheduler, clipboard watch
 5. Installers (MSI, DMG), auto-update
