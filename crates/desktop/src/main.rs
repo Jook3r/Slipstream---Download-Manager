@@ -7,6 +7,7 @@
 
 mod commands;
 mod ipc;
+mod power;
 mod tray;
 mod windows;
 
@@ -17,7 +18,7 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::json;
 use slipstream_bridge::{CHROME_EXTENSION_ID, Endpoint, FIREFOX_EXTENSION_ID};
-use slipstream_manager::{Event, Item, Manager};
+use slipstream_manager::{Event, Item, Manager, WhenDone};
 use tauri::{AppHandle, Emitter, Manager as _, RunEvent, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
@@ -46,6 +47,7 @@ pub struct Integration {
 fn forward(app: &AppHandle, event: Event) {
     match &event {
         Event::Finished { item } => finished(app, item),
+        Event::QueueDone { when_done } => queue_done(app, *when_done),
         Event::Progress { items, total_speed } => tray::update(app, items.len(), *total_speed),
         _ => {}
     }
@@ -71,6 +73,29 @@ fn finished(app: &AppHandle, item: &Item) {
             .title("Download complete")
             .body(&item.file_name)
             .show();
+    }
+}
+
+/// The main download queue finished: do what the scheduler was told to.
+fn queue_done(app: &AppHandle, when_done: WhenDone) {
+    match when_done {
+        WhenDone::Nothing => {
+            let notify = app
+                .try_state::<Manager>()
+                .is_some_and(|m| m.settings().notify_on_complete);
+            if notify {
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title("Download queue finished")
+                    .body("Every download in the queue is done.")
+                    .show();
+            }
+        }
+        WhenDone::Exit => quit(app),
+        WhenDone::Sleep | WhenDone::Shutdown => {
+            let _ = windows::open_countdown(app, when_done);
+        }
     }
 }
 
@@ -204,6 +229,14 @@ fn main() {
             commands::inspect_link,
             commands::inspect_stream,
             commands::suggest_path,
+            commands::get_queue,
+            commands::add_to_queue,
+            commands::remove_from_queue,
+            commands::reorder_queue,
+            commands::start_queue,
+            commands::stop_queue,
+            commands::open_scheduler,
+            commands::power_off,
             commands::ffmpeg_status,
             commands::install_ffmpeg,
             commands::choose_ffmpeg,

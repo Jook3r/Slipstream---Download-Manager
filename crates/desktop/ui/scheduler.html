@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scheduler</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="window.css">
+  <script type="module" src="scheduler.js"></script>
+</head>
+<body class="dialog-window scheduler">
+  <div class="sched-head">
+    <span class="big-icon" data-icon="scheduler"></span>
+    <div>
+      <b>Main download queue</b>
+      <p class="hint" id="summary"></p>
+    </div>
+  </div>
+
+  <div class="sched-body">
+    <div class="tabs" role="tablist">
+      <button type="button" class="active" data-tab="tab-schedule">Schedule</button>
+      <button type="button" data-tab="tab-files">Files in the queue</button>
+    </div>
+    <div class="tab-body pane">
+      <section id="tab-schedule" class="sched-page">
+        <label class="check"><input type="checkbox" id="start"> <b>Start download at</b> <input type="time" id="start-at" class="field narrow"></label>
+        <div class="sched-when" id="when">
+          <label class="check"><input type="radio" name="repeat" id="once"> Once, on <input type="date" id="date" class="field date"></label>
+          <label class="check"><input type="radio" name="repeat" id="daily"> Every week, on</label>
+          <div class="days" id="days"></div>
+        </div>
+        <label class="check"><input type="checkbox" id="stop"> <b>Stop download at</b> <input type="time" id="stop-at" class="field narrow"></label>
+        <div class="row done-row">
+          <label for="when-done">When the queue is done</label>
+          <select id="when-done" class="field">
+            <option value="nothing">Do nothing</option>
+            <option value="exit">Exit Slipstream</option>
+            <option value="sleep">Put the computer to sleep</option>
+            <option value="shutdown">Turn off the computer</option>
+          </select>
+        </div>
+        <p class="hint">Slipstream must be running at the start time; closed to the tray is fine. Before sleeping or turning off, it counts down so you can cancel.</p>
+      </section>
+
+      <section id="tab-files" class="sched-page" hidden>
+        <div class="row files-row">
+          <div class="links queue-list">
+            <table>
+              <colgroup><col class="c-n"><col class="c-name"><col class="c-size"><col></colgroup>
+              <thead><tr><th>#</th><th>File name</th><th>Size</th><th>Status</th></tr></thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+          <div class="side-buttons">
+            <button type="button" class="btn" id="up">Move up</button>
+            <button type="button" class="btn" id="down">Move down</button>
+            <button type="button" class="btn" id="remove">Remove</button>
+          </div>
+        </div>
+        <p class="hint">“Download Later” puts a download in this queue; so does “Add to queue” on a download’s right-click menu.</p>
+      </section>
+    </div>
+  </div>
+
+  <div class="buttons">
+    <button type="button" class="btn" id="start-now">Start now</button>
+    <button type="button" class="btn" id="stop-now">Stop</button>
+    <span class="spacer"></span>
+    <span class="hint" id="saved"></span>
+    <button type="button" class="btn primary" id="apply">Apply</button>
+    <button type="button" class="btn" id="close">Close</button>
+  </div>
+</body>
+</html>

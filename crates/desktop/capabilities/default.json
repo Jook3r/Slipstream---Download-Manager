@@ -5,7 +5,9 @@
     "main",
     "info-*",
     "progress-*",
-    "batch-*"
+    "batch-*",
+    "scheduler",
+    "countdown"
   ],
   "permissions": [
     "core:default",

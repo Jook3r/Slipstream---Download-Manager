@@ -3938,6 +3938,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3964,6 +3965,7 @@ dependencies = [
 name = "slipstream-manager"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "slipstream-engine",

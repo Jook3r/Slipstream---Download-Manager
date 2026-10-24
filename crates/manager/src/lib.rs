@@ -5,6 +5,7 @@
 
 mod category;
 pub mod ffmpeg;
+mod schedule;
 mod store;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -12,6 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use chrono::NaiveDateTime;
 
 use serde::{Deserialize, Serialize};
 use slipstream_engine::probe::file_name_from_url;
@@ -25,6 +28,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 pub use category::Category;
+pub use schedule::{Schedule, WhenDone};
 use store::Store;
 
 pub type Id = u64;
@@ -83,6 +87,13 @@ pub struct Item {
     /// Set for a video stream (HLS or DASH): the quality to download.
     #[serde(default)]
     pub stream: Option<StreamChoice>,
+    /// In the main download queue ("Download Later"), which starts by hand
+    /// or on schedule.
+    #[serde(default)]
+    pub in_queue: bool,
+    /// Its place in the queue; lower goes first.
+    #[serde(default)]
+    pub queue_order: u64,
 }
 
 /// The quality chosen for a video stream.
@@ -120,6 +131,8 @@ pub struct Settings {
     pub show_complete: bool,
     /// ffmpeg chosen by the user; otherwise one is looked for.
     pub ffmpeg_path: Option<PathBuf>,
+    /// When the main download queue starts and stops by itself.
+    pub schedule: Schedule,
 }
 
 impl Default for Settings {
@@ -138,6 +151,7 @@ impl Default for Settings {
             show_progress: true,
             show_complete: true,
             ffmpeg_path: None,
+            schedule: Schedule::default(),
         }
     }
 }
@@ -269,6 +283,14 @@ pub enum Event {
     Ffmpeg {
         status: FfmpegStatus,
     },
+    /// Settings changed (by the user, or a one-time schedule that ran).
+    Settings {
+        settings: Settings,
+    },
+    /// The main download queue has finished; time to do what was asked.
+    QueueDone {
+        when_done: WhenDone,
+    },
 }
 
 pub trait EventSink: Send + Sync + 'static {
@@ -323,6 +345,12 @@ struct State {
     /// Fetching ffmpeg: bytes so far and size.
     ffmpeg_install: Option<(u64, Option<u64>)>,
     ffmpeg_error: Option<String>,
+    /// The queue was started and has not finished or been stopped.
+    queue_running: bool,
+    /// When the schedule was last looked at, in local time.
+    schedule_checked: Option<NaiveDateTime>,
+    /// Tests drive the schedule with times of their own.
+    test_clock: bool,
 }
 
 impl State {
@@ -370,9 +398,27 @@ impl State {
             speed_limit: 0,
             open_when_done: false,
             stream: stream_kind(url, None).map(|_| StreamChoice::default()),
+            in_queue: !start,
+            queue_order: if start { 0 } else { self.next_queue_order() },
         };
         self.next_id += 1;
         item
+    }
+
+    fn next_queue_order(&self) -> u64 {
+        self.items
+            .iter()
+            .map(|i| i.queue_order + 1)
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// Nothing in the queue is waiting or downloading.
+    fn queue_idle(&self) -> bool {
+        !self
+            .items
+            .iter()
+            .any(|i| i.in_queue && matches!(i.status, Status::Queued | Status::Downloading))
     }
 
     /// `base`, or `base (1)`, `base (2)`... whichever is not on disk and
@@ -447,6 +493,9 @@ impl Manager {
                 shutting_down: false,
                 ffmpeg_install: None,
                 ffmpeg_error: None,
+                queue_running: false,
+                schedule_checked: None,
+                test_clock: false,
             }),
         })))
     }
@@ -459,8 +508,12 @@ impl Manager {
             loop {
                 tokio::time::sleep(TICK).await;
                 let Some(inner) = weak.upgrade() else { break };
-                if !Manager(inner).tick(&mut was_active) {
+                let manager = Manager(inner);
+                if !manager.tick(&mut was_active) {
                     break;
+                }
+                if !manager.lock().test_clock {
+                    manager.check_schedule_at(chrono::Local::now().naive_local());
                 }
             }
         });
@@ -840,8 +893,158 @@ impl Manager {
             settings
         };
         self.0.limiter.set_limit(settings.speed_limit);
+        self.0.sink.emit(Event::Settings {
+            settings: settings.clone(),
+        });
         self.pump();
         settings
+    }
+
+    /// The main download queue, in order.
+    pub fn queue(&self) -> Vec<Item> {
+        let mut queue: Vec<Item> = self
+            .lock()
+            .items
+            .iter()
+            .filter(|i| i.in_queue)
+            .cloned()
+            .collect();
+        queue.sort_by_key(|i| i.queue_order);
+        queue
+    }
+
+    /// Puts downloads at the end of the queue (finished ones stay out).
+    pub fn add_to_queue(&self, ids: &[Id]) {
+        self.change_items(ids, |st, id| {
+            let order = st.next_queue_order();
+            let item = st
+                .item_mut(id)
+                .filter(|i| !i.in_queue && i.status != Status::Completed)?;
+            item.in_queue = true;
+            item.queue_order = order;
+            Some(())
+        });
+    }
+
+    /// Takes downloads out of the queue; they stay in the list.
+    pub fn remove_from_queue(&self, ids: &[Id]) {
+        self.change_items(ids, |st, id| {
+            let item = st.item_mut(id).filter(|i| i.in_queue)?;
+            item.in_queue = false;
+            Some(())
+        });
+    }
+
+    /// Puts the queue in this order; downloads not named keep theirs after.
+    pub fn reorder_queue(&self, ids: &[Id]) {
+        let mut order = 0;
+        self.change_items(ids, |st, id| {
+            let item = st.item_mut(id).filter(|i| i.in_queue)?;
+            order += 1;
+            item.queue_order = order;
+            Some(())
+        });
+        let rest: Vec<Id> = self
+            .queue()
+            .iter()
+            .map(|i| i.id)
+            .filter(|id| !ids.contains(id))
+            .collect();
+        let mut order = ids.len() as u64;
+        self.change_items(&rest, |st, id| {
+            order += 1;
+            st.item_mut(id)?.queue_order = order;
+            Some(())
+        });
+    }
+
+    /// Starts the queue: its stopped and failed downloads join the line,
+    /// in the queue's order.
+    pub fn start_queue(&self) {
+        let ids: Vec<Id> = self.queue().iter().map(|i| i.id).collect();
+        self.lock().queue_running = true;
+        self.resume(&ids);
+        // An empty queue has not "finished": nothing happens when done.
+        let mut st = self.lock();
+        if st.queue_idle() {
+            st.queue_running = false;
+        }
+    }
+
+    /// Stops the queue's downloads; nothing happens "when done".
+    pub fn stop_queue(&self) {
+        let ids: Vec<Id> = {
+            let mut st = self.lock();
+            st.queue_running = false;
+            st.items
+                .iter()
+                .filter(|i| i.in_queue && matches!(i.status, Status::Queued | Status::Downloading))
+                .map(|i| i.id)
+                .collect()
+        };
+        self.pause(&ids);
+    }
+
+    /// Acts on the schedule for the time since the last check. Called with
+    /// the local time five times a second; public so tests can pass any time.
+    #[doc(hidden)]
+    pub fn check_schedule_at(&self, now: NaiveDateTime) {
+        let (due, schedule) = {
+            let mut st = self.lock();
+            let Some(last) = st.schedule_checked.replace(now) else {
+                return;
+            };
+            // A long gap means the computer slept or the clock was changed:
+            // what was due meanwhile is skipped rather than done all at once.
+            if now < last || now - last > chrono::TimeDelta::minutes(2) {
+                return;
+            }
+            (
+                schedule::due(&st.settings.schedule, last, now),
+                st.settings.schedule.clone(),
+            )
+        };
+        for due in due {
+            match due {
+                schedule::Due::Stop => self.stop_queue(),
+                schedule::Due::Start => {
+                    if !schedule.daily() {
+                        // A one-time start is used up.
+                        let mut settings = self.settings();
+                        settings.schedule.start = false;
+                        self.set_settings(settings);
+                    }
+                    self.start_queue();
+                }
+            }
+        }
+    }
+
+    /// Stops the real clock from driving the schedule, for tests.
+    #[doc(hidden)]
+    pub fn use_test_clock(&self) {
+        self.lock().test_clock = true;
+    }
+
+    /// Applies `change` to each download and reports the ones it changed.
+    fn change_items(&self, ids: &[Id], mut change: impl FnMut(&mut State, Id) -> Option<()>) {
+        let events: Vec<Event> = {
+            let mut st = self.lock();
+            let changed: Vec<Id> = ids
+                .iter()
+                .copied()
+                .filter(|&id| change(&mut st, id).is_some())
+                .collect();
+            if !changed.is_empty() {
+                self.save_list(&st);
+            }
+            changed
+                .iter()
+                .filter_map(|&id| st.items.iter().find(|i| i.id == id))
+                .map(|item| Event::Updated { item: item.clone() })
+                .collect()
+        };
+        self.emit_all(events);
     }
 
     /// Pauses everything and saves, so running downloads continue on the
@@ -895,7 +1098,21 @@ impl Manager {
             }
             let mut started = false;
             while st.running.len() < st.settings.max_active {
-                let Some(item) = st.items.iter_mut().find(|i| i.status == Status::Queued) else {
+                // Downloads started by hand go first, then the queue in its
+                // order.
+                let next = st
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, i)| i.status == Status::Queued)
+                    .min_by_key(|(n, i)| {
+                        (
+                            i.in_queue,
+                            if i.in_queue { i.queue_order } else { *n as u64 },
+                        )
+                    })
+                    .map(|(n, _)| n);
+                let Some(item) = next.map(|n| &mut st.items[n]) else {
                     break;
                 };
                 item.status = Status::Downloading;
@@ -1096,6 +1313,7 @@ impl Manager {
                         item.status = Status::Completed;
                         item.error = None;
                         item.completed_at = Some(now_ms());
+                        item.in_queue = false;
                         finished = true;
                     }
                     // Paused by the user, or by shutdown (then it resumes
@@ -1116,6 +1334,22 @@ impl Manager {
         }
         self.emit_all(events);
         self.pump();
+        self.check_queue_done();
+    }
+
+    /// Once a running queue has nothing left to do, says what to do next.
+    fn check_queue_done(&self) {
+        let event = {
+            let mut st = self.lock();
+            if !st.queue_running || st.shutting_down || !st.queue_idle() {
+                return;
+            }
+            st.queue_running = false;
+            Event::QueueDone {
+                when_done: st.settings.schedule.when_done,
+            }
+        };
+        self.0.sink.emit(event);
     }
 
     /// Samples running downloads and sends a progress event. Returns false

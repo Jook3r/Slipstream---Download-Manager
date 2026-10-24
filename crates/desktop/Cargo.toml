@@ -18,3 +18,6 @@ tokio = { version = "1.54.1", features = ["net", "io-util", "time"] }
 
 [build-dependencies]
 tauri-build = "2.7.4"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Power", "Win32_Foundation"] }

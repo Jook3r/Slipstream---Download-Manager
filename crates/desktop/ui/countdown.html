@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Slipstream</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="window.css">
+  <script type="module" src="countdown.js"></script>
+</head>
+<body class="dialog-window countdown">
+  <div class="countdown-head">
+    <span class="big-icon" data-icon="scheduler"></span>
+    <div>
+      <b>The download queue has finished</b>
+      <span id="message"></span>
+    </div>
+  </div>
+  <div class="bar paused" id="bar"><i></i></div>
+  <div class="buttons">
+    <span class="spacer"></span>
+    <button type="button" class="btn" id="now"></button>
+    <button type="button" class="btn primary" id="cancel">Cancel</button>
+  </div>
+</body>
+</html>

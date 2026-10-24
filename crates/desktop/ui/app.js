@@ -45,6 +45,14 @@ const TREE = [
     ],
   },
   { id: 'finished', label: 'Finished', icon: 'finished', tint: 'node-finished', test: (i) => i.status === 'completed' },
+  {
+    id: 'queues',
+    label: 'Queues',
+    icon: 'queues',
+    tint: 'node-queue',
+    test: (i) => i.inQueue,
+    children: [{ id: 'queue:main', label: 'Main download queue', icon: 'queued', tint: 'node-queue', test: (i) => i.inQueue }],
+  },
 ];
 const VIEWS = new Map(TREE.flatMap((n) => [n, ...(n.children ?? [])]).map((n) => [n.id, n]));
 
@@ -104,13 +112,18 @@ function render() {
 
 const allItems = () => [...state.items.values()];
 
-/** Queue positions, oldest first, as the manager runs them. */
+/** Places in the main download queue, as the manager runs it. */
 function queuePositions() {
   const positions = new Map();
-  let n = 0;
-  for (const item of allItems()) if (item.status === 'queued') positions.set(item.id, ++n);
+  allItems()
+    .filter((i) => i.inQueue)
+    .sort((a, b) => a.queueOrder - b.queueOrder)
+    .forEach((item, n) => positions.set(item.id, n + 1));
   return positions;
 }
+
+const queueCanStart = (all) => all.some((i) => i.inQueue && canResume(i));
+const queueCanStop = (all) => all.some((i) => i.inQueue && canStop(i));
 
 function visibleItems(queue = queuePositions()) {
   const view = VIEWS.get(state.view) ?? VIEWS.get('all');
@@ -284,8 +297,8 @@ function renderToolbar() {
   $('tb-stop-all').disabled = !all.some(canStop);
   $('tb-delete').disabled = selected.length === 0;
   $('tb-delete-done').disabled = !all.some((i) => i.status === 'completed');
-  $('tb-start-queue').disabled = !all.some(canResume);
-  $('tb-stop-queue').disabled = !all.some((i) => i.status === 'queued');
+  $('tb-start-queue').disabled = !queueCanStart(all);
+  $('tb-stop-queue').disabled = !queueCanStop(all);
 }
 
 function renderStatusbar() {
@@ -311,7 +324,9 @@ function renderStatusbar() {
 const ids = (items) => items.map((i) => i.id);
 const resumeSelected = () => call('resume', { ids: ids(selectedItems().filter(canResume)) });
 const stopSelected = () => call('pause', { ids: ids(selectedItems().filter(canStop)) });
-const stopQueue = () => call('pause', { ids: ids(allItems().filter((i) => i.status === 'queued')) });
+const startQueue = () => call('start_queue');
+const stopQueue = () => call('stop_queue');
+const openScheduler = () => call('open_scheduler');
 const openWindow = (item) => call('open_progress', { id: item.id });
 
 function openItem(item) {
@@ -385,8 +400,9 @@ function menuEntries(name) {
       { label: 'Stop', enabled: selected.some(canStop), run: stopSelected },
       { label: 'Stop all', enabled: all.some(canStop), run: () => call('pause_all') },
       '-',
-      { label: 'Start queue', enabled: all.some(canResume), run: () => call('resume_all') },
-      { label: 'Stop queue', enabled: all.some((i) => i.status === 'queued'), run: stopQueue },
+      { label: 'Start queue', enabled: queueCanStart(all), run: startQueue },
+      { label: 'Stop queue', enabled: queueCanStop(all), run: stopQueue },
+      { label: 'Scheduler…', run: openScheduler },
       '-',
       { label: 'Options…', run: openOptions },
     ],
@@ -411,6 +427,14 @@ function menuEntries(name) {
       '-',
       { label: 'Resume download', icon: 'play', enabled: selected.some(canResume), run: resumeSelected },
       { label: 'Stop download', icon: 'pause', enabled: selected.some(canStop), run: stopSelected },
+      selected.every((i) => i.inQueue) && selected.length
+        ? { label: 'Remove from queue', icon: 'queued', run: () => call('remove_from_queue', { ids: ids(selected) }) }
+        : {
+            label: 'Add to queue',
+            icon: 'queued',
+            enabled: selected.some((i) => !i.inQueue && i.status !== 'completed'),
+            run: () => call('add_to_queue', { ids: ids(selected.filter((i) => !i.inQueue)) }),
+          },
       '-',
       { label: selected.length > 1 ? 'Copy links' : 'Copy link', icon: 'link', enabled: selected.length > 0, run: () => copyLinks(selected) },
       { label: 'Delete…', icon: 'trash', enabled: selected.length > 0, run: askDelete },
@@ -609,6 +633,9 @@ function onEvent(event) {
     case 'ffmpeg':
       showFfmpeg(event.status);
       return;
+    case 'settings':
+      state.settings = event.settings;
+      break;
     case 'progress':
       state.live = new Map(event.items.map((live) => [live.id, live]));
       state.totalSpeed = event.totalSpeed;
@@ -658,7 +685,8 @@ function wire() {
   $('tb-delete').addEventListener('click', askDelete);
   $('tb-delete-done').addEventListener('click', deleteCompleted);
   $('tb-options').addEventListener('click', openOptions);
-  $('tb-start-queue').addEventListener('click', () => call('resume_all'));
+  $('tb-start-queue').addEventListener('click', startQueue);
+  $('tb-scheduler').addEventListener('click', openScheduler);
   $('tb-stop-queue').addEventListener('click', stopQueue);
   $('sb-limit').addEventListener('click', () => {
     openOptions();

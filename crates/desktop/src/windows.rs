@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
-use slipstream_manager::Id;
+use slipstream_manager::{Id, WhenDone};
 use tauri::{AppHandle, Manager as _, WebviewUrl, WebviewWindowBuilder};
 
 /// A link waiting for the user's choices in a Download File Info window.
@@ -134,6 +134,47 @@ pub fn open_progress(app: &AppHandle, id: Id) -> tauri::Result<()> {
         (540.0, 300.0),
         false,
     )
+}
+
+/// IDM's Scheduler: when the main download queue starts and stops, and
+/// what is in it.
+pub fn open_scheduler(app: &AppHandle) -> tauri::Result<()> {
+    open(
+        app,
+        "scheduler",
+        "scheduler.html",
+        "Scheduler",
+        (720.0, 480.0),
+        true,
+    )
+}
+
+/// A last chance to cancel before the computer sleeps or turns off.
+pub fn open_countdown(app: &AppHandle, when_done: WhenDone) -> tauri::Result<()> {
+    let action = match when_done {
+        WhenDone::Sleep => "sleep",
+        WhenDone::Shutdown => "shutdown",
+        WhenDone::Nothing | WhenDone::Exit => return Ok(()),
+    };
+    if let Some(window) = app.get_webview_window("countdown") {
+        window.show()?;
+        return window.set_focus();
+    }
+    WebviewWindowBuilder::new(
+        app,
+        "countdown",
+        WebviewUrl::App(format!("countdown.html?action={action}").into()),
+    )
+    .title("Slipstream")
+    .inner_size(440.0, 200.0)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .always_on_top(true)
+    .center()
+    .focused(true)
+    .build()?;
+    Ok(())
 }
 
 fn open(

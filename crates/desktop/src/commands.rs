@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use slipstream_manager::{
     AddReport, Category, FfmpegStatus, Id, Item, LinkInfo, Manager, NewDownload, Settings,
-    StreamChoice, StreamLinkInfo,
+    StreamChoice, StreamLinkInfo, WhenDone,
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
@@ -366,6 +366,51 @@ fn open_path(app: &AppHandle, path: &Path) -> CmdResult {
     app.opener()
         .open_path(path.to_string_lossy(), None::<&str>)
         .map_err(text)
+}
+
+// ---------- the queue and the scheduler ----------
+
+/// The main download queue, in order.
+#[tauri::command]
+pub fn get_queue(manager: State<Manager>) -> Vec<Item> {
+    manager.queue()
+}
+
+#[tauri::command]
+pub fn add_to_queue(manager: State<Manager>, ids: Vec<Id>) {
+    manager.add_to_queue(&ids);
+}
+
+#[tauri::command]
+pub fn remove_from_queue(manager: State<Manager>, ids: Vec<Id>) {
+    manager.remove_from_queue(&ids);
+}
+
+#[tauri::command]
+pub fn reorder_queue(manager: State<Manager>, ids: Vec<Id>) {
+    manager.reorder_queue(&ids);
+}
+
+#[tauri::command]
+pub fn start_queue(manager: State<Manager>) {
+    manager.start_queue();
+}
+
+#[tauri::command]
+pub fn stop_queue(manager: State<Manager>) {
+    manager.stop_queue();
+}
+
+#[tauri::command]
+pub async fn open_scheduler(app: AppHandle) -> CmdResult {
+    windows::open_scheduler(&app).map_err(text)
+}
+
+/// The countdown before sleeping or turning off ran out, or "Now" was
+/// clicked.
+#[tauri::command]
+pub fn power_off(when_done: WhenDone) -> CmdResult {
+    crate::power::act(when_done).map_err(text)
 }
 
 // ---------- ffmpeg ----------

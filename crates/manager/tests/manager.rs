@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use slipstream_engine::stream_work_dir;
 use slipstream_manager::{
-    Category, Event, Id, Item, Manager, NewDownload, Settings, Status, StreamChoice,
+    Category, Event, Id, Item, Manager, NewDownload, Settings, Status, StreamChoice, WhenDone,
 };
 use slipstream_test_server::{MB, Server, data, start};
 use tempfile::TempDir;
@@ -722,4 +722,145 @@ async fn installs_ffmpeg_from_a_zip() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(h.manager.ffmpeg_status().error.unwrap().contains("unpack"));
+}
+
+fn later(h: &Harness, urls: &[String]) -> Vec<Id> {
+    h.manager
+        .add(urls, &[], false)
+        .added
+        .iter()
+        .map(|i| i.id)
+        .collect()
+}
+
+fn queue_ids(h: &Harness) -> Vec<Id> {
+    h.manager.queue().iter().map(|i| i.id).collect()
+}
+
+fn queue_done_events(h: &Harness) -> Vec<WhenDone> {
+    h.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            Event::QueueDone { when_done } => Some(*when_done),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn download_later_fills_the_queue_in_order() {
+    let h = Harness::new();
+    let urls: Vec<String> = ["a", "b", "c"]
+        .iter()
+        .map(|n| format!("https://example.com/{n}.zip"))
+        .collect();
+    let [a, b, c] = later(&h, &urls)[..] else {
+        panic!()
+    };
+    assert_eq!(queue_ids(&h), [a, b, c]);
+    assert!(h.manager.items().iter().all(|i| i.status == Status::Paused));
+
+    h.manager.reorder_queue(&[c, a]);
+    assert_eq!(queue_ids(&h), [c, a, b]);
+    h.manager.remove_from_queue(&[b]);
+    assert_eq!(queue_ids(&h), [c, a]);
+    h.manager.add_to_queue(&[b]);
+    assert_eq!(queue_ids(&h), [c, a, b]);
+    // Started by hand, a download is not in the queue.
+    let now = h
+        .manager
+        .add(&["https://example.com/d.zip".to_string()], &[], true);
+    assert!(!now.added[0].in_queue);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_queue_runs_in_order_and_says_when_it_is_done() {
+    let h = Harness::new();
+    let (server, _) = start(data(MB, 5)).await;
+    h.configure(|s| {
+        s.max_active = 1;
+        s.schedule.when_done = WhenDone::Shutdown;
+    });
+    h.manager.start();
+    let [first, second] = later(&h, &[server.url("one.bin"), server.url("two.bin")])[..] else {
+        panic!()
+    };
+    h.manager.reorder_queue(&[second, first]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        h.manager.items().iter().all(|i| i.status == Status::Paused),
+        "waits for Start Queue"
+    );
+
+    h.manager.start_queue();
+    let a = h.completed(second).await;
+    let b = h.completed(first).await;
+    assert!(a.completed_at <= b.completed_at, "in the queue's order");
+    assert!(
+        h.manager.queue().is_empty(),
+        "finished downloads leave the queue"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while queue_done_events(&h).is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(queue_done_events(&h), [WhenDone::Shutdown]);
+
+    // Starting an empty queue does nothing, so nothing "finishes".
+    h.manager.start_queue();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(queue_done_events(&h).len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_schedule_starts_and_stops_the_queue() {
+    use chrono::NaiveDateTime;
+    let at = |t: &str| NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M").unwrap();
+    let h = Harness::new();
+    let (server, _) = start(data(4 * MB, 6)).await;
+    server.per_conn_rate.store(100_000, Ordering::SeqCst);
+    h.configure(|s| {
+        s.schedule.start = true;
+        s.schedule.start_at = "02:30".into();
+        s.schedule.date = "2026-10-24".into();
+        s.schedule.stop = true;
+        s.schedule.stop_at = "03:00".into();
+        s.schedule.when_done = WhenDone::Exit;
+    });
+    h.manager.use_test_clock();
+    h.manager.start();
+    let [id] = later(&h, &[server.url("night.bin")])[..] else {
+        panic!()
+    };
+
+    h.manager.check_schedule_at(at("2026-10-24 02:29"));
+    h.manager.check_schedule_at(at("2026-10-24 02:30"));
+    h.wait(id, |i| i.status == Status::Downloading).await;
+    assert!(
+        !h.manager.settings().schedule.start,
+        "a one-time start is used up"
+    );
+
+    // Checks a minute apart, as if the app had been running all along.
+    for minute in 31..=59 {
+        h.manager
+            .check_schedule_at(at(&format!("2026-10-24 02:{minute}")));
+    }
+    assert_eq!(h.manager.item(id).unwrap().status, Status::Downloading);
+    h.manager.check_schedule_at(at("2026-10-24 03:00"));
+    h.wait(id, |i| i.status == Status::Paused).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(queue_done_events(&h).is_empty(), "stopped, not done");
+
+    // After the computer slept through a start time, it is skipped.
+    h.configure(|s| {
+        s.schedule.start = true;
+        s.schedule.date = "2026-10-25".into();
+    });
+    h.manager.check_schedule_at(at("2026-10-25 01:00"));
+    h.manager.check_schedule_at(at("2026-10-25 09:00"));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(h.manager.item(id).unwrap().status, Status::Paused);
 }

@@ -155,3 +155,43 @@ body.dialog-window {
 .links .url { color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .links td:first-child, .links th:first-child { padding: 0 0 0 10px; text-overflow: clip; }
 .links input[type=checkbox] { margin: 0; vertical-align: middle; }
+
+/* Scheduler */
+
+body.scheduler { gap: 12px; }
+.sched-head { display: flex; gap: 12px; align-items: center; }
+.sched-head .big-icon { color: #0e8f9e; }
+.sched-head b { font-size: 15px; }
+.sched-head .hint { margin-top: 2px; }
+.sched-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sched-body .pane { flex: 1; min-height: 0; display: flex; }
+.sched-page { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.sched-page .check { gap: 8px; }
+.sched-page .field.narrow { width: 120px; }
+.sched-page .field.date { width: 160px; }
+.sched-when { display: flex; flex-direction: column; gap: 8px; padding-left: 26px; }
+.sched-when.off { opacity: 0.55; }
+.days { display: flex; gap: 6px; flex-wrap: wrap; padding-left: 24px; }
+.day { position: relative; cursor: pointer; }
+.day input { position: absolute; opacity: 0; }
+.day span { display: inline-block; min-width: 46px; padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 14px; text-align: center; font-size: 12px; }
+.day input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.day input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.day input:disabled + span { opacity: 0.55; cursor: default; }
+.done-row label { color: var(--text); white-space: nowrap; }
+.done-row select { width: 260px; flex: none; }
+.files-row { flex: 1; min-height: 0; align-items: stretch; }
+.queue-list col.c-n { width: 36px; }
+.queue-list col.c-name { width: 52%; }
+.queue-list col.c-size { width: 90px; }
+.queue-list tr { cursor: default; }
+.queue-list tr.selected td { background: var(--selected); color: var(--selected-text); }
+.queue-list td.none { color: var(--muted); text-align: center; height: 60px; }
+.side-buttons { display: flex; flex-direction: column; gap: 6px; }
+
+/* Countdown before sleeping or turning off */
+
+body.countdown { justify-content: space-between; }
+.countdown-head { display: flex; gap: 14px; align-items: center; }
+.countdown-head .big-icon { color: var(--warn); }
+.countdown-head b { display: block; font-size: 15px; margin-bottom: 2px; }
