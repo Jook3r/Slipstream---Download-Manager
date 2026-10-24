@@ -40,6 +40,18 @@ impl Server {
     }
 }
 
+/// Decrements `counter` unless it is already zero; true if it did.
+fn take_one(counter: &AtomicUsize) -> bool {
+    let mut n = counter.load(Ordering::SeqCst);
+    while n > 0 {
+        match counter.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(current) => n = current,
+        }
+    }
+    false
+}
+
 struct InFlight(Arc<Server>);
 impl Drop for InFlight {
     fn drop(&mut self) {
@@ -91,11 +103,8 @@ async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
     }
 
     // Only real data requests misbehave, not the one-byte probe.
-    let drop_at = (to - from > 1
-        && s.drops_left
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok())
-    .then(|| from + s.drop_after.load(Ordering::SeqCst));
+    let drop_at = (to - from > 1 && take_one(&s.drops_left))
+        .then(|| from + s.drop_after.load(Ordering::SeqCst));
     let rate = s.per_conn_rate.load(Ordering::SeqCst);
     let current = s.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     s.max_in_flight.fetch_max(current, Ordering::SeqCst);
