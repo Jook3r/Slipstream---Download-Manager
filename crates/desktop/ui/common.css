@@ -153,7 +153,7 @@ input[type=checkbox], input[type=radio], input[type=range] { accent-color: var(-
   height: 100%;
   width: 0;
   background: linear-gradient(var(--progress-2), var(--progress));
-  transition: width 0.4s ease;
+  transition: width 0.15s linear;
 }
 .bar.paused > i { background: var(--paused); }
 .bar.failed > i { background: var(--err); }

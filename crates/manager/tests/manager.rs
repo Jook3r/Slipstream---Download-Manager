@@ -464,3 +464,67 @@ async fn reports_which_pieces_are_active() {
     assert!(live.segments.iter().filter(|s| s.active).count() >= 2);
     assert_eq!(live.segments[0].start, 0);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn refuses_a_web_page_served_instead_of_the_file() {
+    let (server, _) = start(b"<html>This link has expired</html>".to_vec()).await;
+    *server.content_type.write().unwrap() = Some("text/html; charset=utf-8".into());
+    let h = Harness::new();
+    h.manager.start();
+
+    let info = h
+        .manager
+        .inspect(&server.url("Tiny11.iso"), &[])
+        .await
+        .unwrap();
+    assert!(info.web_page);
+    let id = h.add(&server.url("Tiny11.iso"));
+    let item = h.wait(id, |i| i.status == Status::Failed).await;
+
+    assert!(item.error.unwrap().contains("web page"));
+    assert!(
+        std::fs::read_dir(h.downloads.path()).unwrap().all(|e| e
+            .unwrap()
+            .file_type()
+            .unwrap()
+            .is_dir())
+    );
+
+    // A link to an actual page still downloads.
+    let page = h.add(&server.url("guide.html"));
+    h.completed(page).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keeps_downloaded_data_when_the_link_expires() {
+    let content = data(8 * MB, 16);
+    let (server, url) = start(content.clone()).await;
+    server.per_conn_rate.store(MB as u64, Ordering::SeqCst);
+    let h = Harness::new();
+    h.configure(|s| s.connections = 4);
+    h.manager.start();
+    let id = h.add(&url);
+    h.wait(id, |i| i.downloaded >= MB as u64).await;
+    h.manager.pause(&[id]);
+    let paused = h.wait(id, |i| i.status == Status::Paused).await;
+
+    // The link expires: the site now sends its download page.
+    server.set_data(b"<html>expired</html>".to_vec(), "page");
+    *server.content_type.write().unwrap() = Some("text/html".into());
+    h.manager.resume(&[id]);
+    let failed = h.wait(id, |i| i.status == Status::Failed).await;
+    assert!(failed.error.unwrap().contains("web page"));
+    let part = slipstream_engine::partial_files(paused.path.as_ref().unwrap())[0].clone();
+    assert_eq!(
+        std::fs::metadata(&part).unwrap().len(),
+        content.len() as u64
+    );
+
+    // A fresh link: the download continues where it stopped.
+    server.set_data(content.clone(), "v1");
+    *server.content_type.write().unwrap() = None;
+    server.per_conn_rate.store(0, Ordering::SeqCst);
+    h.manager.resume(&[id]);
+    let done = h.completed(id).await;
+    assert!(std::fs::read(done.path.unwrap()).unwrap() == content);
+}

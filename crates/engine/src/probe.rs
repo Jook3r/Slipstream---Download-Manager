@@ -1,5 +1,7 @@
 //! Finding out what we are about to download before committing to a plan.
 
+use std::time::Duration;
+
 use percent_encoding::percent_decode_str;
 use reqwest::header::{self, HeaderMap};
 use reqwest::{Client, StatusCode};
@@ -22,6 +24,16 @@ pub struct RemoteInfo {
 }
 
 impl RemoteInfo {
+    /// Whether the server answered with an HTML page. For a link to a file
+    /// that usually means the link expired and the site sent its download
+    /// page instead.
+    pub fn is_web_page(&self) -> bool {
+        self.content_type.as_deref().is_some_and(|t| {
+            let t = t.trim_start().to_ascii_lowercase();
+            t.starts_with("text/html") || t.starts_with("application/xhtml")
+        })
+    }
+
     /// Validator to send in `If-Range`, so a changed file is never stitched
     /// together from two versions. Weak ETags are not allowed there.
     pub fn if_range(&self) -> Option<&str> {
@@ -36,6 +48,27 @@ impl RemoteInfo {
 /// total size; a `200` means the server ignores ranges. We use GET rather
 /// than HEAD because many servers and signed URLs handle HEAD badly.
 pub async fn probe(client: &Client, url: &str, headers: &[(String, String)]) -> Result<RemoteInfo> {
+    // The first contact with a busy mirror often fails (a dropped
+    // connection, a 503); try a few times before giving up.
+    let mut attempt = 0;
+    loop {
+        match probe_once(client, url, headers).await {
+            Err(e) if !e.is_fatal() && attempt < PROBE_RETRIES => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(700 * attempt)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+const PROBE_RETRIES: u64 = 3;
+
+async fn probe_once(
+    client: &Client,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<RemoteInfo> {
     let req = apply_headers(client.get(url), headers).header(header::RANGE, "bytes=0-0");
     let resp = req.send().await?;
     let status = resp.status();

@@ -10,9 +10,11 @@ import {
   decorateIcons,
   fmtBytes,
   folderFor,
+  friendlyError,
   invoke,
   joinPath,
   params,
+  resizeWindow,
   splitPath,
   svg,
   thisWindow,
@@ -23,10 +25,28 @@ let settings = null;
 let pathEdited = false;
 let inspected = 0;
 
-function setMessage(text, kind = '') {
-  const el = $('message');
-  el.textContent = text;
-  el.className = `hint message ${kind}`;
+const WIDTH = 620;
+
+/** Grows or shrinks the window to fit its contents, so nothing is cut off. */
+function fit() {
+  requestAnimationFrame(() => {
+    const height = Math.ceil($('form').getBoundingClientRect().height) + 24;
+    resizeWindow(WIDTH, Math.min(height, 560));
+  });
+}
+
+/** A problem with the link: a short summary, the full text on request. */
+function showNotice(kind, summary, details = '', canRetry = true) {
+  $('notice').hidden = !summary;
+  $('notice').className = `notice ${kind}`;
+  $('notice-text').textContent = summary;
+  $('notice-text').title = details;
+  $('notice-details').textContent = details;
+  $('notice-details').hidden = true;
+  $('details-toggle').hidden = !details;
+  $('details-toggle').textContent = 'Show details';
+  $('retry').hidden = !canRetry;
+  fit();
 }
 
 function showCategory(category) {
@@ -57,24 +77,27 @@ async function inspect() {
   $('size').textContent = 'Checking…';
   $('resume').textContent = '';
   apply(await invoke('guess_link', { url }), false);
+  showNotice('', '');
   try {
     const info = await invoke('inspect_link', { token, url });
     if (ticket !== inspected) return;
     apply(info, true);
-    setMessage('');
+    if (info.webPage) {
+      showNotice('error', friendlyError('web page instead of the file'));
+    }
   } catch (err) {
     if (ticket !== inspected) return;
     $('size').textContent = 'Unknown size';
-    setMessage(`The server did not answer: ${err}. You can still try to download it.`, 'warn');
+    showNotice('warn', `${friendlyError(err)} You can still try to download it.`, String(err));
   }
 }
 
 async function checkPath() {
   const path = $('path').value.trim();
-  if (path && (await invoke('path_exists', { path }))) {
-    setMessage('A file with this name already exists and will be replaced.', 'warn');
-  } else if ($('message').classList.contains('warn') && $('message').textContent.startsWith('A file')) {
-    setMessage('');
+  const exists = Boolean(path) && (await invoke('path_exists', { path }));
+  if ($('exists').hidden === exists) {
+    $('exists').hidden = !exists;
+    fit();
   }
 }
 
@@ -107,7 +130,7 @@ async function init() {
   settings = await invoke('get_settings');
   const link = await invoke('pending_link', { token });
   if (!link) {
-    setMessage('This link is no longer waiting. Close this window and try again.', 'error');
+    showNotice('error', 'This link is no longer waiting. Close this window and try again.', '', false);
     for (const b of document.querySelectorAll('button[type=submit]')) b.disabled = true;
     return;
   }
@@ -119,6 +142,13 @@ async function init() {
     submit(e.submitter?.value !== 'later');
   });
   $('cancel').addEventListener('click', cancel);
+  $('retry').addEventListener('click', inspect);
+  $('details-toggle').addEventListener('click', () => {
+    const details = $('notice-details');
+    details.hidden = !details.hidden;
+    $('details-toggle').textContent = details.hidden ? 'Show details' : 'Hide details';
+    fit();
+  });
   closeOnEscape(() => invoke('cancel_link', { token }));
   $('url').addEventListener('change', () => {
     pathEdited = false;

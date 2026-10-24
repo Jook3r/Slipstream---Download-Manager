@@ -35,7 +35,41 @@ body.dialog-window {
 }
 .filecard .size { font-weight: 600; font-variant-numeric: tabular-nums; }
 .filecard .resume { color: var(--muted); font-size: 11px; }
-.info .message { grid-column: 1 / -1; min-height: 16px; }
+.info .notice, .info .exists { grid-column: 1 / -1; }
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--sunken);
+}
+.notice-text {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.notice.warn .notice-text { color: var(--warn); }
+.notice.error .notice-text { color: var(--err); }
+.notice-actions { display: flex; gap: 10px; align-items: center; }
+.linkish { padding: 0; border: 0; background: none; color: var(--link); cursor: pointer; font-size: 12px; }
+.linkish:hover { text-decoration: underline; }
+.notice-details {
+  max-height: 96px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 4px;
+  background: var(--panel);
+  font: 11px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .info .buttons { grid-column: 1 / -1; justify-content: flex-end; }
 
 /* Progress window */
@@ -51,7 +85,8 @@ body.dialog-window {
 #progress-view, #complete-view { display: flex; flex-direction: column; gap: 10px; }
 .caption { margin: 0; text-align: center; color: var(--muted); font-size: 12px; }
 .segmap { display: block; width: 100%; height: 16px; border: 1px solid var(--border-strong); border-radius: 3px; }
-.conn-table { max-height: 168px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel); }
+/* Room for the header and the default 8 connections; more scroll. */
+.conn-table { max-height: 192px; overflow: auto; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--panel); }
 .conn-table table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .conn-table th {
   position: sticky;

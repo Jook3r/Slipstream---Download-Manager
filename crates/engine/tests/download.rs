@@ -335,3 +335,49 @@ async fn same_name_downloads_started_together_get_separate_files() {
     );
     assert!(read(dir.path(), "test (1).bin") == content);
 }
+
+#[tokio::test]
+async fn retries_a_busy_server_on_first_contact() {
+    let content = data(MB, 15);
+    let (server, url) = start(content.clone()).await;
+    server.probe_failures.store(2, Ordering::SeqCst);
+    let dir = tempfile::tempdir().unwrap();
+
+    download(&url, dir.path(), opts(4)).await.unwrap();
+
+    assert_eq!(server.probe_failures.load(Ordering::SeqCst), 0);
+    assert!(read(dir.path(), "test.bin") == content);
+}
+
+#[tokio::test]
+async fn errors_leave_out_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    // Nothing listens on port 9 (discard) on test machines.
+    let err = prepare(
+        "http://127.0.0.1:9/secret-token/file.zip",
+        dir.path(),
+        opts(1),
+    )
+    .await
+    .err()
+    .expect("nothing is listening");
+
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(&err);
+    while let Some(cause) = source {
+        text.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    assert!(!text.contains("secret-token"), "{text}");
+}
+
+#[tokio::test]
+async fn reports_web_pages() {
+    let (server, url) = start(b"<html>expired</html>".to_vec()).await;
+    *server.content_type.write().unwrap() = Some("text/html; charset=utf-8".into());
+    let client = build_client(&ClientOptions::default()).unwrap();
+
+    let remote = slipstream_engine::probe(&client, &url, &[]).await.unwrap();
+
+    assert!(remote.is_web_page());
+}

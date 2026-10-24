@@ -13,6 +13,7 @@ import {
   fmtExactBytes,
   fmtPercent,
   fmtSpeed,
+  friendlyError,
   invoke,
   onEvents,
   params,
@@ -78,7 +79,7 @@ function statusText() {
     case 'paused':
       return 'Stopped';
     case 'failed':
-      return `Error: ${item.error ?? 'the download failed'}`;
+      return friendlyError(item.error ?? 'the download failed');
     default:
       return '';
   }
@@ -92,6 +93,7 @@ function renderProgress() {
   $('url').title = item.url;
   const status = $('status');
   setText(status, statusText());
+  status.title = item.status === 'failed' ? item.error ?? '' : '';
   status.classList.toggle('error', item.status === 'failed');
   setText($('size'), item.total != null ? fmtBytes(item.total) : 'Unknown');
   setText($('downloaded'), pct != null ? `${fmtBytes(item.downloaded)} (${fmtPercent(pct)})` : fmtBytes(item.downloaded));

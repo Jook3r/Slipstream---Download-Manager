@@ -34,7 +34,15 @@
       <span class="resume" id="resume"></span>
     </aside>
 
-    <p class="hint message" id="message" role="status"></p>
+    <div class="notice" id="notice" role="status" hidden>
+      <p class="notice-text" id="notice-text"></p>
+      <div class="notice-actions">
+        <button type="button" class="btn small" id="retry">Retry</button>
+        <button type="button" class="linkish" id="details-toggle">Show details</button>
+      </div>
+      <pre class="notice-details" id="notice-details" hidden></pre>
+    </div>
+    <p class="hint warn exists" id="exists" hidden>A file with this name already exists and will be replaced.</p>
 
     <div class="buttons">
       <button type="submit" class="btn" value="later">Download Later</button>

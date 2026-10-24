@@ -26,6 +26,10 @@ pub struct Server {
     /// Break this many data responses after `drop_after` bytes.
     pub drops_left: AtomicUsize,
     pub drop_after: AtomicUsize,
+    /// Answer this many one-byte probes with 503, like a busy mirror.
+    pub probe_failures: AtomicUsize,
+    /// Content-Type to send, e.g. `text/html` for an expired link's page.
+    pub content_type: RwLock<Option<String>>,
     pub requests: AtomicUsize,
     pub range_requests: AtomicUsize,
     pub bytes_sent: AtomicU64,
@@ -102,6 +106,10 @@ impl Drop for InFlight {
 async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
     let (data, etag) = s.data.read().unwrap().clone();
     s.requests.fetch_add(1, Ordering::SeqCst);
+    let is_probe = headers.get(header::RANGE).is_some_and(|v| v == "bytes=0-0");
+    if is_probe && take_one(&s.probe_failures) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let len = data.len();
 
     let if_range_ok = headers
@@ -120,6 +128,9 @@ async fn serve(State(s): State<Arc<Server>>, headers: HeaderMap) -> Response {
         .map(|(a, b)| (a.parse::<usize>().unwrap(), b.parse::<usize>().ok()));
 
     let mut resp = Response::builder().header(header::ETAG, &etag);
+    if let Some(content_type) = s.content_type.read().unwrap().as_deref() {
+        resp = resp.header(header::CONTENT_TYPE, content_type);
+    }
     let (from, to) = match range {
         Some((a, _)) if a >= len => {
             return resp

@@ -41,7 +41,7 @@ pub fn partial_files(path: &std::path::Path) -> [std::path::PathBuf; 2] {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("network error")]
-    Http(#[from] reqwest::Error),
+    Http(reqwest::Error),
     #[error("server responded with {0}")]
     Status(StatusCode),
     #[error(transparent)]
@@ -50,15 +50,26 @@ pub enum Error {
     RemoteChanged,
     #[error("unexpected response: {0}")]
     BadResponse(String),
+    #[error(
+        "the server sent a web page instead of the file; the link has probably expired, so get a fresh one from the website"
+    )]
+    WebPage,
     #[error("gave up after repeated errors; run the download again to resume")]
     Incomplete,
     #[error("cancelled")]
     Cancelled,
 }
 
+impl From<reqwest::Error> for Error {
+    /// Leaves the URL out: download links are long, and the caller knows it.
+    fn from(err: reqwest::Error) -> Self {
+        Error::Http(err.without_url())
+    }
+}
+
 impl Error {
     /// Fatal errors stop every connection; the rest are retried with backoff.
-    fn is_fatal(&self) -> bool {
+    pub(crate) fn is_fatal(&self) -> bool {
         match self {
             Error::Http(e) => e.is_builder(),
             // 403 is often a per-connection limit rather than a real denial,
@@ -73,7 +84,11 @@ impl Error {
                             | StatusCode::TOO_MANY_REQUESTS
                     )
             }
-            Error::Io(_) | Error::RemoteChanged | Error::Incomplete | Error::Cancelled => true,
+            Error::Io(_)
+            | Error::RemoteChanged
+            | Error::Incomplete
+            | Error::Cancelled
+            | Error::WebPage => true,
             Error::BadResponse(_) => false,
         }
     }

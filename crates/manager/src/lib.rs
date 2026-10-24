@@ -6,7 +6,7 @@
 mod category;
 mod store;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,7 +30,12 @@ pub type Id = u64;
 const LIST_FILE: &str = "downloads.json";
 const SETTINGS_FILE: &str = "settings.json";
 /// How often live progress is sent to the UI.
-const TICK: Duration = Duration::from_millis(500);
+const TICK: Duration = Duration::from_millis(200);
+/// Transfer rates are measured over this much recent time.
+const SPEED_WINDOW: Duration = Duration::from_secs(1);
+/// An HTML answer smaller than this, for a link to some other kind of file,
+/// is a web page served instead of the file.
+const MAX_STRAY_PAGE: u64 = 4 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,6 +169,8 @@ pub struct LinkInfo {
     pub total: Option<u64>,
     pub resumable: bool,
     pub content_type: Option<String>,
+    /// The server sent a web page instead of the file (an expired link).
+    pub web_page: bool,
     pub category: Category,
     /// A free file name in the category's folder.
     pub suggested_path: PathBuf,
@@ -326,9 +333,7 @@ struct Running {
     handle: Option<JoinHandle<()>>,
     /// Set once the download has been prepared.
     progress: Option<Progress>,
-    last_bytes: u64,
-    last_at: Instant,
-    speed: f64,
+    speed: SpeedMeter,
     removing: bool,
     /// This download's own speed limit, changeable while it runs.
     limiter: Arc<RateLimiter>,
@@ -459,6 +464,7 @@ impl Manager {
             total: remote.total,
             resumable: remote.ranges && remote.total.is_some(),
             content_type: remote.content_type.clone(),
+            web_page: page_instead_of_file(&remote, &remote.file_name),
             category,
             suggested_path,
         })
@@ -477,6 +483,7 @@ impl Manager {
             total: None,
             resumable: false,
             content_type: None,
+            web_page: false,
             category,
         }
     }
@@ -731,9 +738,7 @@ impl Manager {
                         cancel,
                         handle: Some(handle),
                         progress: None,
-                        last_bytes: 0,
-                        last_at: Instant::now(),
-                        speed: 0.0,
+                        speed: SpeedMeter::default(),
                         removing: false,
                         limiter,
                     },
@@ -780,11 +785,22 @@ impl Manager {
         let prepare = async {
             match &item.path {
                 Some(path) => {
-                    Download::prepare(client, request(Output::File(path.clone())), options).await
+                    let download =
+                        Download::prepare(client, request(Output::File(path.clone())), options)
+                            .await?;
+                    // Checked before anything touches the file, so a link
+                    // that expired never overwrites what was downloaded.
+                    if page_instead_of_file(&download.info().remote, &file_name_of(path)) {
+                        return Err(slipstream_engine::Error::WebPage);
+                    }
+                    Ok(download)
                 }
                 None => {
                     // Probe first: the server's file name decides the folder.
                     let remote = probe(&client, &item.url, &item.headers).await?;
+                    if page_instead_of_file(&remote, &remote.file_name) {
+                        return Err(slipstream_engine::Error::WebPage);
+                    }
                     let folder = settings.folder_for(Category::from_file_name(&remote.file_name));
                     Download::prepare_probed(client, request(Output::Dir(folder)), options, remote)
                         .await
@@ -801,8 +817,7 @@ impl Manager {
             let info = download.info();
             if let Some(running) = st.running.get_mut(&id) {
                 running.progress = Some(download.progress());
-                running.last_bytes = info.resumed_bytes;
-                running.last_at = Instant::now();
+                running.speed.restart(info.resumed_bytes);
             }
             let event = st.item_mut(id).map(|item| {
                 item.file_name = file_name_of(&info.path);
@@ -887,18 +902,8 @@ impl Manager {
                     continue;
                 };
                 let snap = progress.snapshot();
-                let dt = now.duration_since(run.last_at).as_secs_f64();
-                if dt > 0.0 {
-                    let instant = snap.downloaded.saturating_sub(run.last_bytes) as f64 / dt;
-                    run.speed = if run.speed == 0.0 {
-                        instant
-                    } else {
-                        run.speed * 0.6 + instant * 0.4
-                    };
-                }
-                run.last_bytes = snap.downloaded;
-                run.last_at = now;
-                total_speed += run.speed;
+                let speed = run.speed.sample(now, snap.downloaded);
+                total_speed += speed;
                 if let Some(item) = items.iter_mut().find(|i| i.id == id) {
                     item.downloaded = snap.downloaded;
                     item.total = snap.total.or(item.total);
@@ -907,7 +912,7 @@ impl Manager {
                     id,
                     downloaded: snap.downloaded,
                     total: snap.total,
-                    speed: run.speed,
+                    speed,
                     connections: snap.connections,
                     segments: snap.segments,
                 });
@@ -927,6 +932,46 @@ impl Manager {
         }
         true
     }
+}
+
+/// Bytes per second over the last second: quick to follow a change in
+/// speed, without jumping around on every update.
+#[derive(Default)]
+struct SpeedMeter {
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl SpeedMeter {
+    fn restart(&mut self, bytes: u64) {
+        self.samples.clear();
+        self.samples.push_back((Instant::now(), bytes));
+    }
+
+    fn sample(&mut self, now: Instant, bytes: u64) -> f64 {
+        self.samples.push_back((now, bytes));
+        while self.samples.len() > 2 && now.duration_since(self.samples[1].0) >= SPEED_WINDOW {
+            self.samples.pop_front();
+        }
+        let (since, from) = self.samples[0];
+        let seconds = now.duration_since(since).as_secs_f64();
+        if seconds < 0.05 {
+            0.0
+        } else {
+            bytes.saturating_sub(from) as f64 / seconds
+        }
+    }
+}
+
+/// A small HTML page where some other kind of file was expected: the link
+/// expired and the site sent its download page instead.
+fn page_instead_of_file(remote: &slipstream_engine::RemoteInfo, file_name: &str) -> bool {
+    let named_as_page = file_name.rsplit_once('.').is_some_and(|(_, ext)| {
+        matches!(
+            ext.to_ascii_lowercase().as_str(),
+            "html" | "htm" | "xhtml" | "shtml" | "mht" | "mhtml"
+        )
+    });
+    remote.is_web_page() && !named_as_page && remote.total.is_none_or(|t| t < MAX_STRAY_PAGE)
 }
 
 fn delete_item_files(item: &Item) {
@@ -973,4 +1018,26 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speed_follows_changes_within_a_second() {
+        let start = Instant::now();
+        let mut meter = SpeedMeter::default();
+        let mut bytes = 0u64;
+        let mut speed = 0.0;
+        // 2 s at 1 MB/s, then 4 MB/s, sampled every 200 ms.
+        for tick in 1..=20u64 {
+            bytes += if tick <= 10 { 200_000 } else { 800_000 };
+            speed = meter.sample(start + Duration::from_millis(200 * tick), bytes);
+            if tick == 10 {
+                assert!((speed - 1_000_000.0).abs() < 1.0, "{speed}");
+            }
+        }
+        assert!((speed - 4_000_000.0).abs() < 1.0, "{speed}");
+    }
 }

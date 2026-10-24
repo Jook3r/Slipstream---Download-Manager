@@ -142,6 +142,27 @@ export const fmtDate = (ms) => (ms ? dateFmt.format(new Date(ms)) : '');
 export const percent = (item) => (item.total > 0 ? Math.min(100, (item.downloaded / item.total) * 100) : null);
 export const fmtPercent = (p) => `${p.toFixed(2)}%`;
 
+/** A plain-language summary of an error from the app; the full text can go in a tooltip. */
+export function friendlyError(error) {
+  const text = String(error ?? '').trim();
+  const rules = [
+    [/web page instead of the file/i, 'The server sent a web page instead of the file. The link has probably expired: click it again on the website to get a fresh one.'],
+    [/forcibly closed|connection reset|reset by peer|connection closed|broken pipe|unexpected eof/i, 'The server closed the connection.'],
+    [/timed? ?out/i, 'The server took too long to answer.'],
+    [/dns|failed to lookup|no such host|name or service not known|nodename nor servname/i, "Couldn't find the server. Check the address and your internet connection."],
+    [/certificate|\btls\b|\bssl\b|handshake/i, "Couldn't make a secure connection to the server."],
+    [/refused/i, 'The server refused the connection.'],
+    [/\b404\b/, "The file isn't on the server (404)."],
+    [/\b(401|403)\b/, 'The server refused access. The link may have expired or need you to sign in.'],
+    [/\b(500|502|503|504)\b/, 'The server had a problem. Try again in a little while.'],
+    [/no space|disk full|not enough space/i, 'The disk is full.'],
+    [/permission denied|access is denied/i, "Slipstream isn't allowed to save in that folder."],
+  ];
+  for (const [pattern, summary] of rules) if (pattern.test(text)) return summary;
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return sentence.length > 160 ? `${sentence.slice(0, 157)}…` : sentence;
+}
+
 export const setText = (el, text) => {
   if (el.textContent !== text) el.textContent = text;
 };

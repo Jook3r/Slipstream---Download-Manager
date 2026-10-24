@@ -12,6 +12,7 @@ import {
   fmtEta,
   fmtPercent,
   fmtSpeed,
+  friendlyError,
   invoke,
   onEvents,
   percent,
@@ -211,7 +212,7 @@ function updateRow(tr, item, queue) {
   tr.querySelector('.mini i').style.width = `${pct ?? 0}%`;
   const stext = tr.querySelector('.stext');
   setText(stext, statusText(item));
-  stext.title = item.error ?? '';
+  stext.title = item.error ? `${friendlyError(item.error)}\n\n${item.error}` : '';
   const speed = item.status === 'downloading' && live ? live.speed : 0;
   setText(tr.querySelector('.rate'), fmtSpeed(speed));
   setText(tr.querySelector('.eta'), speed > 0 && item.total ? fmtEta((item.total - item.downloaded) / speed) : '');
